@@ -4,6 +4,7 @@ library track."""
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import re
 import shutil
@@ -28,7 +29,9 @@ from app.library import (
     tmp_dir,
 )
 from app.metadata import clean_artist, clean_title, split_artist_title
+from app.playlist_import import MAX_PLAYLIST_TRACKS, PlaylistInfo
 from app.sources import (
+    ImportUrl,
     UnsupportedUrl,
     parse_import_url,
     resolve_soundcloud_short,
@@ -67,6 +70,11 @@ _ERRORS: list[tuple[str, str, bool]] = [
         False,
     ),
     (r"private video", "This video is private.", False),
+    (
+        r"drm[- ]protected|drm protection",
+        "DRM-protected (licensed / SoundCloud Go+ track): it can't be downloaded.",
+        False,
+    ),
     (r"members[- ]only|join this channel", "Members-only video.", False),
     (
         r"premieres in|live event will begin|is_upcoming",
@@ -142,6 +150,8 @@ ProgressFn = Callable[[float], None]
 class Downloader(Protocol):
     def extract(self, url: str) -> dict[str, Any]: ...
 
+    def extract_playlist(self, url: str) -> PlaylistInfo: ...
+
     def download(self, info: dict[str, Any], dest_dir: Path, progress: ProgressFn) -> Path: ...
 
 
@@ -175,6 +185,25 @@ class YtDlpDownloader:
             shutil.copyfile(s.ytdlp_cookies_file, copy)
             opts["cookiefile"] = str(copy)
         return opts
+
+    def extract_playlist(self, url: str) -> PlaylistInfo:
+        """List a playlist/set without downloading anything ("flat" extraction)."""
+        opts = self._opts()
+        opts.update(
+            noplaylist=False,
+            extract_flat="in_playlist",
+            playlistend=MAX_PLAYLIST_TRACKS,
+            allowed_extractors=["youtube$", "youtube:tab$", "soundcloud$", "soundcloud:set$"],
+        )
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+        except yt_dlp.utils.DownloadError as e:
+            failed = classify_error(str(e))
+            raise ImportFailed(failed.message, retryable=failed.retryable) from None
+        if not info or info.get("_type") != "playlist":
+            raise ImportFailed("That link isn't a playlist.", retryable=False)
+        return playlist_entries(info)
 
     def extract(self, url: str) -> dict[str, Any]:
         try:
@@ -274,6 +303,11 @@ async def process_import(
             raise ImportFailed(str(e), retryable=False) from None
         except OSError as e:
             raise ImportFailed(f"Could not resolve the short link ({e}).", retryable=True) from None
+        if target.kind != "track":
+            raise ImportFailed(
+                "That short link points to a playlist: paste it again to import the whole set.",
+                retryable=False,
+            )
         url = target.url
         async with sm() as session:
             await jobs.merge_payload(session, job_id, url=url, needs_resolve=False)
@@ -321,3 +355,62 @@ async def process_import(
         return track.id
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
+
+
+_UNAVAILABLE = ("[private video]", "[deleted video]", "[unavailable video]")
+
+
+def playlist_entries(info: dict[str, Any]) -> PlaylistInfo:
+    """Turn a flat playlist into validated single-track import targets."""
+    entries: list[ImportUrl] = []
+    skipped = 0
+    for e in list(info.get("entries") or [])[:MAX_PLAYLIST_TRACKS]:
+        if not e or str(e.get("title") or "").lower() in _UNAVAILABLE:
+            skipped += 1
+            continue
+        try:
+            target = parse_import_url(str(e.get("url") or ""))
+        except UnsupportedUrl:
+            skipped += 1
+            continue
+        if target.kind != "track" or target.needs_resolve:
+            skipped += 1
+            continue
+        if target.source == "soundcloud" and e.get("id"):
+            target = dataclasses.replace(target, key=soundcloud_key(e["id"]))
+        entries.append(dataclasses.replace(target, playlist_url=None))
+    title = str(info.get("title") or "Imported playlist").strip() or "Imported playlist"
+    return PlaylistInfo(title=title, entries=entries, skipped=skipped)
+
+
+@dataclasses.dataclass
+class LinkInfo:
+    kind: str  # "track" | "playlist"
+    url: str
+    source: str
+    title: str | None = None
+    count: int | None = None
+    # for a video inside a playlist
+    playlist_url: str | None = None
+    playlist_title: str | None = None
+    playlist_count: int | None = None
+
+
+def inspect_link(raw: str, downloader: Downloader | None = None) -> LinkInfo:
+    """What does this link point to? Blocking (network): call in a thread."""
+    target = parse_import_url(raw)
+    if target.needs_resolve:
+        target = resolve_soundcloud_short(target.url)
+    dl = downloader or YtDlpDownloader()
+    if target.kind == "playlist":
+        info = dl.extract_playlist(target.url)
+        return LinkInfo("playlist", target.url, target.source, info.title, len(info.entries))
+    out = LinkInfo("track", target.url, target.source)
+    if target.playlist_url:
+        try:
+            info = dl.extract_playlist(target.playlist_url)
+            out.playlist_url = target.playlist_url
+            out.playlist_title, out.playlist_count = info.title, len(info.entries)
+        except ImportFailed:
+            pass  # e.g. a private list: just offer the video
+    return out

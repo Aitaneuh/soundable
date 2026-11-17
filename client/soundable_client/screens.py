@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import platform
+from dataclasses import dataclass
 
 from rich.text import Text
 from textual import on, work
@@ -10,7 +11,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
-from textual.widgets import Button, Input, Label, OptionList, Static
+from textual.widgets import Button, Input, Label, OptionList, Static, Switch
 from textual.widgets.option_list import Option
 
 from soundable_client.api import Api, ApiError, AuthError, NetworkError, Playlist, Track
@@ -235,6 +236,107 @@ class PlaylistPickerScreen(ModalScreen[str | None]):
         picker = self.query_one("#picker", OptionList)
         picker.focus()
         picker.highlighted = 1 if self.playlists else 0
+
+    @on(OptionList.OptionSelected)
+    def _chosen(self, event: OptionList.OptionSelected) -> None:
+        self.dismiss(event.option.id)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+@dataclass
+class PlaylistImportChoice:
+    create_playlist: bool
+    name: str
+
+
+class ImportPlaylistScreen(ModalScreen[PlaylistImportChoice | None]):
+    """Confirm a playlist import and choose whether to create a soundable playlist."""
+
+    BINDINGS = [Binding("escape", "cancel", show=False)]
+
+    def __init__(self, title: str, count: int, source: str) -> None:
+        super().__init__()
+        self.pl_title = title
+        self.count = count
+        self.source = "SoundCloud" if source == "soundcloud" else "YouTube"
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="dialog"):
+            yield Static(f"[bold]Import a {self.source} playlist[/]")
+            yield Static(
+                Text.assemble(
+                    (self.pl_title, f"bold {accent()}"),
+                    (f"  ·  {self.count} track{'s' * (self.count != 1)}", "dim"),
+                )
+            )
+            with Horizontal(classes="switch-row"):
+                yield Switch(value=True, id="create")
+                yield Label("Also create a playlist from it", classes="switch-label")
+            yield Label("Playlist name", classes="field-label", id="name-label")
+            yield Input(self.pl_title, id="name")
+            yield Static(
+                "[dim]Tracks already in your library are not downloaded again, but they "
+                "are added to the playlist.[/]",
+                classes="note",
+            )
+            with Horizontal(classes="buttons"):
+                yield Button("Cancel", id="cancel")
+                yield Button("Import", variant="primary", id="import")
+
+    def on_mount(self) -> None:
+        self.query_one("#import", Button).focus()
+
+    @on(Switch.Changed, "#create")
+    def _toggle(self, event: Switch.Changed) -> None:
+        self.query_one("#name", Input).display = event.value
+        self.query_one("#name-label", Label).display = event.value
+
+    @on(Input.Submitted, "#name")
+    @on(Button.Pressed, "#import")
+    def _import(self) -> None:
+        create = self.query_one("#create", Switch).value
+        name = self.query_one("#name", Input).value.strip()
+        if create and not name:
+            self.query_one("#name", Input).focus()
+            return
+        self.dismiss(PlaylistImportChoice(create, name))
+
+    @on(Button.Pressed, "#cancel")
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class VideoOrPlaylistScreen(ModalScreen[str | None]):
+    """A video link that also names a playlist: import the video or the whole list?"""
+
+    BINDINGS = [Binding("escape", "cancel", show=False)]
+
+    def __init__(self, playlist_title: str, playlist_count: int) -> None:
+        super().__init__()
+        self.playlist_title = playlist_title
+        self.playlist_count = playlist_count
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="dialog"):
+            yield Static("[bold]This link is a video inside a playlist.[/] Import…")
+            yield OptionList(
+                Option(Text("Just this video"), id="video"),
+                Option(
+                    Text.assemble(
+                        "The whole playlist ",
+                        (self.playlist_title, f"bold {accent()}"),
+                        (f"  ({self.playlist_count} tracks)", "dim"),
+                    ),
+                    id="playlist",
+                ),
+                id="choice",
+            )
+            yield Static("[dim]↑/↓ choose · Enter confirm · Esc cancel[/]")
+
+    def on_mount(self) -> None:
+        self.query_one("#choice", OptionList).focus()
 
     @on(OptionList.OptionSelected)
     def _chosen(self, event: OptionList.OptionSelected) -> None:

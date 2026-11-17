@@ -11,8 +11,9 @@ import asyncio
 import contextlib
 import logging
 import signal
+import uuid
 
-from app import jobs
+from app import jobs, playlist_import
 from app.config import get_settings
 from app.db import get_engine, get_sessionmaker
 from app.importer import Downloader, ImportFailed, YtDlpDownloader, process_import
@@ -25,11 +26,53 @@ POLL_SECONDS = 2.0
 
 
 async def run_one(job: Job, downloader: Downloader) -> None:
+    log.info("job %s (%s) attempt %d: %s", job.id, job.type, job.attempts, job.payload.get("url"))
+    if job.type == jobs.IMPORT_PLAYLIST:
+        await _run_playlist(job, downloader)
+    elif job.type == jobs.IMPORT_URL:
+        await _run_track(job, downloader)
+    else:
+        async with get_sessionmaker()() as session:
+            await jobs.fail(
+                session,
+                job.id,
+                f"unknown job type {job.type!r}",
+                retryable=False,
+                attempts=job.attempts,
+            )
+
+
+async def _run_playlist(job: Job, downloader: Downloader) -> None:
     sm = get_sessionmaker()
-    log.info("job %s attempt %d: %s", job.id, job.attempts, job.payload.get("url"))
     try:
-        if job.type != jobs.IMPORT_URL:
-            raise ImportFailed(f"unknown job type {job.type!r}", retryable=False)
+        info = await asyncio.to_thread(downloader.extract_playlist, job.payload["url"])
+        if not info.entries:
+            raise ImportFailed(
+                "The playlist is empty, or none of its tracks are available.", retryable=False
+            )
+        await playlist_import.spawn(job, info)
+    except ImportFailed as e:
+        async with sm() as session:
+            await jobs.fail(
+                session, job.id, e.message, retryable=e.retryable, attempts=job.attempts
+            )
+        log.warning("playlist job %s failed: %s", job.id, e.message)
+    except Exception as e:
+        log.exception("playlist job %s crashed", job.id)
+        async with sm() as session:
+            await jobs.fail(
+                session,
+                job.id,
+                f"Internal error: {e.__class__.__name__}: {e}"[:500],
+                retryable=True,
+                attempts=job.attempts,
+            )
+
+
+async def _run_track(job: Job, downloader: Downloader) -> None:
+    sm = get_sessionmaker()
+    terminal = True
+    try:
         track_id = await process_import(job.id, dict(job.payload), downloader)
     except DuplicateTrackError as e:
         async with sm() as session:
@@ -42,28 +85,30 @@ async def run_one(job: Job, downloader: Downloader) -> None:
                 track_id=e.existing.id,
             )
         log.info("job %s: duplicate of %s", job.id, e.existing.id)
-        return
     except ImportFailed as e:
         async with sm() as session:
             requeued = await jobs.fail(
                 session, job.id, e.message, retryable=e.retryable, attempts=job.attempts
             )
+        terminal = not requeued
         log.warning("job %s failed (%s): %s", job.id, "retry" if requeued else "final", e.message)
-        return
     except Exception as e:
         log.exception("job %s crashed", job.id)
         async with sm() as session:
-            await jobs.fail(
+            requeued = await jobs.fail(
                 session,
                 job.id,
                 f"Internal error: {e.__class__.__name__}: {e}"[:500],
                 retryable=True,
                 attempts=job.attempts,
             )
-        return
-    async with sm() as session:
-        await jobs.finish(session, job.id, track_id)
-    log.info("job %s done -> track %s", job.id, track_id)
+        terminal = not requeued
+    else:
+        async with sm() as session:
+            await jobs.finish(session, job.id, track_id)
+        log.info("job %s done -> track %s", job.id, track_id)
+    if terminal and (parent := job.payload.get("parent_id")):
+        await playlist_import.on_child_finished(uuid.UUID(parent))
 
 
 async def run(stop: asyncio.Event, downloader: Downloader | None = None) -> None:
@@ -74,6 +119,7 @@ async def run(stop: asyncio.Event, downloader: Downloader | None = None) -> None
     async with sm() as session:
         if n := await jobs.requeue_stale(session):
             log.warning("re-queued %d job(s) left running by a previous worker", n)
+    await playlist_import.finalize_orphans()
     log.info("worker started")
     while not stop.is_set():
         try:

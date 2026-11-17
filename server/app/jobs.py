@@ -6,13 +6,14 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Job
 from app.schemas import JobOut, TrackOut
 
 IMPORT_URL = "import_url"
+IMPORT_PLAYLIST = "import_playlist"
 MAX_ATTEMPTS = 3
 BACKOFF = (timedelta(seconds=30), timedelta(minutes=3))  # before attempt 2 and 3
 # A running job whose row hasn't been touched for this long belongs to a dead worker.
@@ -24,6 +25,15 @@ def job_out(job: Job) -> JobOut:
     return JobOut(
         id=job.id,
         type=job.type,
+        kind="playlist" if job.type == IMPORT_PLAYLIST else "track",
+        parent_id=p.get("parent_id"),
+        total=p.get("total"),
+        children=p.get("children"),
+        done=p.get("done"),
+        failed=p.get("failed"),
+        already=p.get("already", len(p.get("existing", [])) if "existing" in p else None),
+        playlist_id=p.get("playlist_id"),
+        playlist_name=p.get("playlist_name"),
         status=job.status,  # type: ignore[arg-type]
         progress=job.progress,
         url=p.get("url"),
@@ -44,7 +54,13 @@ async def claim_next(session: AsyncSession) -> Job | None:
     job = await session.scalar(
         select(Job)
         .where(Job.status == "queued", Job.run_after <= func.now())
-        .order_by(Job.run_after, Job.created_at)
+        # Single imports go before the tracks of a big playlist; playlist tracks in order.
+        .order_by(
+            Job.payload.has_key("parent_id"),
+            Job.run_after,
+            Job.created_at,
+            Job.payload["index"].as_integer(),
+        )
         .limit(1)
         .with_for_update(skip_locked=True)
     )
@@ -64,7 +80,12 @@ async def requeue_stale(session: AsyncSession) -> int:
     """Jobs left 'running' by a worker that died (crash, container kill) go back to the queue."""
     res = await session.execute(
         update(Job)
-        .where(Job.status == "running", Job.updated_at < func.now() - STALE_AFTER)
+        .where(
+            Job.status == "running",
+            Job.updated_at < func.now() - STALE_AFTER,
+            # a spawned playlist parent stays "running" until its children finish
+            or_(Job.type != IMPORT_PLAYLIST, ~Job.payload.has_key("spawned")),
+        )
         .values(status="queued", run_after=func.now())
     )
     await session.commit()

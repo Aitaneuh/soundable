@@ -73,6 +73,14 @@ class Job:
     error: str | None
     attempts: int
     track: Track | None
+    kind: str = "track"  # track | playlist
+    total: int | None = None  # playlist: entries
+    children: int | None = None  # playlist: tracks actually being imported
+    done: int | None = None
+    failed: int | None = None
+    already: int | None = None
+    playlist_id: str | None = None
+    playlist_name: str | None = None
 
     @classmethod
     def from_json(cls, d: dict[str, Any]) -> Job:
@@ -87,6 +95,14 @@ class Job:
             error=d.get("error"),
             attempts=int(d.get("attempts") or 0),
             track=Track.from_json(d["track"]) if d.get("track") else None,
+            kind=d.get("kind") or "track",
+            total=d.get("total"),
+            children=d.get("children"),
+            done=d.get("done"),
+            failed=d.get("failed"),
+            already=d.get("already"),
+            playlist_id=d.get("playlist_id"),
+            playlist_name=d.get("playlist_name"),
         )
 
     @property
@@ -98,6 +114,22 @@ class Job:
         if self.title:
             return f"{self.title} — {self.artist}" if self.artist else self.title
         return self.url or "?"
+
+
+@dataclass(frozen=True)
+class LinkInfo:
+    kind: str  # track | playlist
+    url: str
+    source: str
+    title: str | None
+    count: int | None
+    playlist_url: str | None
+    playlist_title: str | None
+    playlist_count: int | None
+
+    @classmethod
+    def from_json(cls, d: dict[str, Any]) -> LinkInfo:
+        return cls(**{k: d.get(k) for k in cls.__dataclass_fields__})  # type: ignore[arg-type]
 
 
 @dataclass(frozen=True)
@@ -275,11 +307,24 @@ class Api:
 
     # --- imports / jobs ------------------------------------------------------------------
 
-    async def create_import(self, url: str) -> tuple[Job, bool]:
+    async def inspect(self, url: str) -> LinkInfo:
+        """What a link points to (track / playlist / video inside a playlist)."""
+        resp = await self._request("POST", "/api/imports/inspect", json={"url": url}, timeout=70.0)
+        return LinkInfo.from_json(resp.json())
+
+    async def create_import(
+        self, url: str, mode: str = "auto", playlist_name: str | None = None
+    ) -> tuple[Job, bool]:
         """Returns (job, created). created=False means the link was already being imported.
         Raises ApiError(409, data={'existing_track_id': ...}) if it's already in the library."""
-        resp = await self._request("POST", "/api/imports", json={"url": url})
+        body: dict[str, Any] = {"url": url, "mode": mode}
+        if playlist_name:
+            body["playlist_name"] = playlist_name
+        resp = await self._request("POST", "/api/imports", json=body)
         return Job.from_json(resp.json()), resp.status_code == 201
+
+    async def cancel_job(self, job_id: str) -> Job:
+        return Job.from_json((await self._request("POST", f"/api/jobs/{job_id}/cancel")).json())
 
     async def job(self, job_id: str) -> Job:
         return Job.from_json((await self._request("GET", f"/api/jobs/{job_id}")).json())

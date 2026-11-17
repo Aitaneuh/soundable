@@ -60,6 +60,16 @@ class ErrorOut(BaseModel):
 class JobOut(BaseModel):
     id: uuid.UUID
     type: str
+    kind: Literal["track", "playlist"] = "track"
+    parent_id: uuid.UUID | None = None
+    # playlist imports: entries, child jobs, progress counters, target playlist
+    total: int | None = None
+    children: int | None = None
+    done: int | None = None
+    failed: int | None = None
+    already: int | None = None
+    playlist_id: uuid.UUID | None = None
+    playlist_name: str | None = None
     status: Literal["queued", "running", "done", "failed"]
     progress: int
     url: str | None

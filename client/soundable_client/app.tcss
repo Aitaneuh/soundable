@@ -76,3 +76,21 @@ ModalScreen {
     height: auto;
     margin-top: 1;
 }
+
+.dialog .switch-row {
+    height: auto;
+    margin-top: 1;
+}
+
+.dialog .switch-label {
+    padding: 1 0 0 1;
+}
+
+.dialog .note {
+    margin-top: 1;
+}
+
+.dialog OptionList {
+    height: auto;
+    margin: 1 0;
+}

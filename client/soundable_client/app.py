@@ -44,10 +44,12 @@ from soundable_client.screens import (
     NEW_PLAYLIST,
     ConfirmScreen,
     EditTrackScreen,
+    ImportPlaylistScreen,
     LoginResult,
     LoginScreen,
     NameScreen,
     PlaylistPickerScreen,
+    VideoOrPlaylistScreen,
 )
 from soundable_client.views import BrowseView, ListenView, help_text
 from soundable_client.widgets import CommandMenu, NowPlaying, PromptInput, StatusHeader, TaskList
@@ -1294,11 +1296,53 @@ class SoundableApp(App[None]):
             self.say(f"Not found: {', '.join(missing) or args}", "error")
 
     async def cmd_import(self, url: str) -> None:
+        """Paste/`/add` a link: look at it first, ask about playlists, then queue it."""
         if not await self._ensure_api():
             return
         assert self.api
+        tid = self.tasks.add("Looking at the link…")
         try:
-            job, created = await self.api.create_import(url)
+            info = await self.api.inspect(url)
+        except ApiError as e:
+            if e.status in (400, 504):
+                self.say(str(e), "warn")
+                return
+            raise
+        finally:
+            self.tasks.done(tid)
+
+        mode, name = "track", None
+        if info.kind == "playlist":
+            choice = await self.push_screen_wait(
+                ImportPlaylistScreen(info.title or "Playlist", info.count or 0, info.source)
+            )
+            if choice is None:
+                self.say("Import cancelled.")
+                return
+            mode, name = "playlist", (choice.name if choice.create_playlist else None)
+        elif info.playlist_url:
+            which = await self.push_screen_wait(
+                VideoOrPlaylistScreen(info.playlist_title or "playlist", info.playlist_count or 0)
+            )
+            if which is None:
+                self.say("Import cancelled.")
+                return
+            if which == "playlist":
+                choice = await self.push_screen_wait(
+                    ImportPlaylistScreen(
+                        info.playlist_title or "Playlist", info.playlist_count or 0, info.source
+                    )
+                )
+                if choice is None:
+                    self.say("Import cancelled.")
+                    return
+                mode, name = "playlist", (choice.name if choice.create_playlist else None)
+        await self._queue_import(url, mode, name)
+
+    async def _queue_import(self, url: str, mode: str, playlist_name: str | None) -> None:
+        assert self.api
+        try:
+            job, created = await self.api.create_import(url, mode, playlist_name)
         except ApiError as e:
             if e.status == 409 and isinstance(e.data, dict) and e.data.get("existing_track_id"):
                 track = await self.api.track(e.data["existing_track_id"])
@@ -1320,29 +1364,42 @@ class SoundableApp(App[None]):
             raise
         if not created:
             self.say("That link is already being imported.")
+        elif job.kind == "playlist":
+            saved = f", saved as the playlist '{playlist_name}'" if playlist_name else ""
+            self.say(f"Importing the tracks{saved}. You can keep using the app meanwhile.")
         self.track_job(job)
 
     def track_job(self, job: Job) -> None:
         if job.id in self._tracked_jobs:
             return
         self._tracked_jobs.add(job.id)
-        self.run_worker(self._follow_job(job), group="jobs")
+        self.run_worker(self._follow_job(job), group="jobs", exit_on_error=False)
+
+    def _job_line(self, job: Job) -> tuple[str, float | None]:
+        if job.kind == "playlist":
+            name = job.title or job.url or "playlist"
+            if job.status == "queued":
+                return f"Queued playlist: {name}", None
+            if job.children is None:
+                return f"Reading playlist: {name}", None
+            finished = (job.done or 0) + (job.failed or 0)
+            return (
+                f"Importing playlist {name}: {finished}/{job.children} tracks",
+                job.progress / 100,
+            )
+        if job.status == "running":
+            return f"Importing {job.label}", job.progress / 100
+        state = f"Retrying soon ({job.error})" if job.error else "Queued"
+        return f"{state}: {job.label}", None
 
     async def _follow_job(self, job: Job) -> None:
         """Spinner line that follows a server-side import until it finishes."""
-        tid = self.tasks.add(f"Queued: {job.label}")
+        tid = self.tasks.add(self._job_line(job)[0])
         failures = 0
         try:
-            while True:
-                if job.status == "running":
-                    self.tasks.update_task(
-                        tid, label=f"Importing {job.label}", progress=job.progress / 100
-                    )
-                elif job.status == "queued":
-                    state = f"Retrying soon ({job.error})" if job.error else "Queued"
-                    self.tasks.update_task(tid, label=f"{state}: {job.label}")
-                else:
-                    break
+            while job.active:
+                label, progress = self._job_line(job)
+                self.tasks.update_task(tid, label=label, progress=progress)
                 await asyncio.sleep(1.0)
                 if not self.api:
                     return
@@ -1359,7 +1416,9 @@ class SoundableApp(App[None]):
             self.tasks.done(tid)
             self._tracked_jobs.discard(job.id)
 
-        if job.status == "done" and job.track:
+        if job.kind == "playlist":
+            await self._playlist_job_done(job)
+        elif job.status == "done" and job.track:
             t = job.track
             self.last, self.last_kind = [t], "tracks"
             self.say(
@@ -1382,22 +1441,56 @@ class SoundableApp(App[None]):
         else:
             self.say(f"Import failed: {job.error or 'unknown error'}  ({job.url})", "error")
 
+    async def _playlist_job_done(self, job: Job) -> None:
+        name = job.title or "playlist"
+        if job.status == "failed":
+            self.say(f"Playlist import failed: {job.error or 'unknown error'}", "error")
+            return
+        parts = [f"{job.done or 0} new"]
+        if job.already:
+            parts.append(f"{job.already} already in your library")
+        # failed child jobs = real failures + duplicates found during download
+        dup_children = max(0, (job.already or 0) - max(0, (job.total or 0) - (job.children or 0)))
+        lost = max(0, (job.failed or 0) - dup_children)
+        if lost:
+            parts.append(f"{lost} failed")
+        self.say(
+            Text.assemble("Imported playlist ", (name, "bold"), f": {', '.join(parts)}."),
+            "warn" if lost else "ok",
+        )
+        if job.playlist_name:
+            hint = f"/playlist play {job.playlist_name} · /playlist show {job.playlist_name}"
+            if lost:
+                hint += "  · /jobs to see what failed"
+            self.say(Text(hint, style="dim"))
+            await self._after_playlist_change()
+        if self.query_one(BrowseView).library:
+            self.load_library()
+
     async def cmd_jobs(self, args: str) -> None:
         if not await self._ensure_api():
             return
         assert self.api
         jobs = await self.api.jobs(limit=15)
         sub, _, rest = args.partition(" ")
-        if sub == "retry":
-            failed = [j for j in jobs if j.status == "failed"]
+        if sub in ("retry", "cancel"):
             idx = self._numbers(rest, len(jobs))
-            if idx is None or len(idx) != 1 or jobs[idx[0]].status != "failed":
-                hint = " (no failed jobs)" if not failed else ""
-                self.say(f"Usage: /jobs retry <n> with the # of a failed job{hint}", "warn")
+            want = ("failed",) if sub == "retry" else ("queued", "running")
+            if idx is None or len(idx) != 1 or jobs[idx[0]].status not in want:
+                what = "a failed" if sub == "retry" else "a queued or running"
+                self.say(f"Usage: /jobs {sub} <n> with the # of {what} import (see /jobs)", "warn")
                 return
-            job = await self.api.retry_job(jobs[idx[0]].id)
-            self.say(f"Retrying {job.label}")
-            self.track_job(job)
+            if sub == "retry":
+                job = await self.api.retry_job(jobs[idx[0]].id)
+                self.say(f"Retrying {job.label}")
+                self.track_job(job)
+            else:
+                try:
+                    job = await self.api.cancel_job(jobs[idx[0]].id)
+                except ApiError as e:
+                    self.say(str(e), "warn")
+                    return
+                self.say(f"Cancelled {job.title or job.label}.")
             return
         if not jobs:
             self.say("No imports yet. Paste a YouTube or SoundCloud link to import one.")
@@ -1412,16 +1505,29 @@ class SoundableApp(App[None]):
         )
         table.add_column("#", justify="right", style="dim")
         table.add_column("Status")
-        table.add_column("Track", overflow="ellipsis", max_width=50)
+        table.add_column("Import", overflow="ellipsis", max_width=50)
         table.add_column("Details", style="dim", overflow="fold", max_width=60)
         styles = {"done": "green", "failed": "red", "running": accent(), "queued": "yellow"}
         for i, j in enumerate(jobs, 1):
             status = j.status + (f" {j.progress}%" if j.status == "running" else "")
-            detail = j.error or (j.track.source if j.track else j.url or "")
-            table.add_row(str(i), Text(status, style=styles.get(j.status, "")), j.label, detail)
+            if j.kind == "playlist":
+                label = f"▤ {j.title or j.url}"
+                counts = (
+                    f"{j.done or 0} new · {j.already or 0} already · {j.children or 0} to import"
+                )
+                detail = j.error or counts
+            else:
+                label = j.label
+                detail = j.error or (j.track.source if j.track else j.url or "")
+            table.add_row(str(i), Text(status, style=styles.get(j.status, "")), label, detail)
         self.show(table)
+        hints = []
         if any(j.status == "failed" for j in jobs):
-            self.say(Text("/jobs retry <n> to retry a failed import", style="dim"))
+            hints.append("/jobs retry <n> to retry a failed import")
+        if any(j.active for j in jobs):
+            hints.append("/jobs cancel <n> to cancel")
+        if hints:
+            self.say(Text(" · ".join(hints), style="dim"))
 
     def _pick(self, args: str, verb: str) -> Track | None:
         in_queue = self.last_kind == "queue" and self.player is not None

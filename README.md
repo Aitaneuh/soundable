@@ -122,10 +122,17 @@ Enter to play, `/` to filter). Windows media keys control playback too (via mpv)
 
 Pasting a link creates a job; the `worker` container downloads it with yt-dlp and adds it
 to the library. `/jobs` in the client shows recent imports, `/jobs retry <n>` retries one.
+Single links you paste are handled before the remaining tracks of a big playlist import.
 
-- Only single tracks: YouTube videos (a `watch?v=…&list=…` link imports just that video)
-  and SoundCloud tracks (incl. private `s-…` links and `on.soundcloud.com` short links).
-  Playlists / sets are refused for now.
+- Tracks: YouTube videos, SoundCloud tracks (incl. private `s-…` links and
+  `on.soundcloud.com` short links).
+- Playlists: YouTube playlists and SoundCloud sets (up to 500 tracks). The client shows
+  the playlist's title and size and asks whether to also create a soundable playlist from
+  it. A video link that also carries a playlist (`watch?v=…&list=…`) asks "just this
+  video, or the whole playlist?". Tracks already in the library aren't downloaded again
+  but are added to the new playlist; the playlist is filled in the original order once
+  every track is done. YouTube "Mix"/radio lists (auto-generated, endless) are refused.
+  `/jobs cancel <n>` stops the remaining tracks of a playlist import.
 - Audio: YouTube's AAC stream (m4a) is preferred because iPhones play it natively. Anything
   iOS can't play (Opus/WebM…) is converted once to AAC 256 kbps.
 - Duplicates are refused (same video / SoundCloud track id, or identical file content).

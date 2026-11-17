@@ -67,6 +67,28 @@ def test_parse_ok(raw: str, url: str, key: str | None) -> None:
     assert (target.url, target.key) == (url, key)
 
 
+def test_parse_playlists() -> None:
+    t = parse_import_url("https://www.youtube.com/playlist?list=PLFgquLnL59alCl_2TQvOiD5Vgm1hCaGSI")
+    assert t.kind == "playlist" and t.key is None
+    assert t.url == "https://www.youtube.com/playlist?list=PLFgquLnL59alCl_2TQvOiD5Vgm1hCaGSI"
+    t = parse_import_url("https://music.youtube.com/watch?list=PLFgquLnL59alCl_2TQvOiD5Vgm1hCaGSI")
+    assert t.kind == "playlist"
+    t = parse_import_url("https://soundcloud.com/the-concept-band/sets/the-royal-concept-ep?si=x")
+    assert (t.kind, t.url) == (
+        "playlist",
+        "https://soundcloud.com/the-concept-band/sets/the-royal-concept-ep",
+    )
+    # a video inside a playlist: a track, with the playlist offered as an alternative
+    t = parse_import_url(
+        "https://www.youtube.com/watch?v=jNQXAC9IVRw&list=PLFgquLnL59alCl_2TQvOiD5Vgm1hCaGSI"
+    )
+    assert t.kind == "track" and t.key == "youtube:jNQXAC9IVRw"
+    assert t.playlist_url and t.playlist_url.endswith("list=PLFgquLnL59alCl_2TQvOiD5Vgm1hCaGSI")
+    # Mix/radio lists are never offered
+    t = parse_import_url("https://www.youtube.com/watch?v=jNQXAC9IVRw&list=RDjNQXAC9IVRw")
+    assert t.kind == "track" and t.playlist_url is None
+
+
 def test_parse_short_soundcloud() -> None:
     t = parse_import_url("https://on.soundcloud.com/AbC123")
     assert t.needs_resolve and t.url == "https://on.soundcloud.com/AbC123"
@@ -75,9 +97,9 @@ def test_parse_short_soundcloud() -> None:
 @pytest.mark.parametrize(
     "raw",
     [
-        "https://www.youtube.com/playlist?list=PL123",
-        "https://www.youtube.com/watch?list=PL123",
-        "https://soundcloud.com/forss/sets/soundtracks",
+        "https://www.youtube.com/playlist?list=RDdQw4w9WgXcQ",  # endless Mix
+        "https://www.youtube.com/playlist?list=WL",
+        "https://soundcloud.com/forss/sets/a/b/c",
         "https://soundcloud.com/forss",
         "https://soundcloud.com/forss/likes",
         "https://evil.com/watch?v=jNQXAC9IVRw",
@@ -131,6 +153,7 @@ def test_track_meta() -> None:
             True,
         ),
         ("ERROR: [youtube] abc: Read timed out.", "Network", True),
+        ("ERROR: [soundcloud] 123: This video is DRM protected", "DRM", False),
         ("ERROR: something new and weird", "something new and weird", True),
     ],
 )
