@@ -28,7 +28,8 @@ Subsonic-compatible API for iPhone apps (Amperfy, play:Sub, substreamer).
 If Cloudflare's *Bot Fight Mode* / WAF is on, it may challenge the iPhone app's requests
 (non-browser traffic): add a WAF skip rule for this hostname if Amperfy can't log in.
 
-To update: push to `main`, then in Portainer *Pull and redeploy* (with re-build).
+To update: push to `main`, then in Portainer *Pull and redeploy*. The app image is always
+rebuilt from the repo (`pull_policy: build`), so the "re-pull image" toggle only affects Postgres.
 
 ## Run the server locally
 
@@ -102,8 +103,8 @@ uv lock --directory server --upgrade-package yt-dlp --upgrade-package yt-dlp-ejs
 git commit -am "Update yt-dlp" && git push
 ```
 
-then in Portainer: *Stacks → soundable → Pull and redeploy* (with "re-pull image and
-redeploy" + rebuild). yt-dlp also needs Deno for YouTube; its version is pinned in
+then in Portainer: *Stacks → soundable → Pull and redeploy* (the image is rebuilt from the
+repo on every deploy). yt-dlp also needs Deno for YouTube; its version is pinned in
 `server/Dockerfile` (`denoland/deno:bin-…`), bump it there if yt-dlp asks for a newer one.
 
 ### "Sign in to confirm you're not a bot"
