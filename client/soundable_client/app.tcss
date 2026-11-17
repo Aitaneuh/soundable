@@ -1,0 +1,78 @@
+Screen {
+    layout: vertical;
+}
+
+#header {
+    height: 1;
+    background: $panel;
+}
+
+#main {
+    height: 1fr;
+}
+
+#log {
+    height: 1fr;
+    padding: 0 1;
+    scrollbar-size-vertical: 1;
+    background: $background;
+}
+
+#tasks {
+    border-top: none;
+}
+
+#np {
+    border-top: solid $panel-lighten-2;
+    height: 3;
+}
+
+#prompt {
+    border: round #d97757;
+    margin: 0 0;
+}
+
+#prompt:focus {
+    border: round #d97757;
+}
+
+#hints {
+    display: none;
+    height: 3;
+    border: round $panel-lighten-2;
+    padding: 0 1;
+}
+
+/* dialogs */
+ModalScreen {
+    align: center middle;
+    background: $background 60%;
+}
+
+.dialog {
+    width: 64;
+    height: auto;
+    padding: 1 2;
+    border: round #d97757;
+    background: $surface;
+}
+
+.dialog .field-label {
+    margin-top: 1;
+    color: $text-muted;
+}
+
+.dialog .buttons {
+    height: auto;
+    align-horizontal: right;
+    margin-top: 1;
+}
+
+.dialog Button {
+    margin-left: 1;
+}
+
+#login-status, #edit-status {
+    height: auto;
+    margin-top: 1;
+}
