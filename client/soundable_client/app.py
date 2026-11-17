@@ -18,6 +18,7 @@ from textual.widgets import ContentSwitcher, Input, RichLog, Static
 
 from soundable_client import __version__
 from soundable_client.api import Api, ApiError, AuthError, NetworkError, Track
+from soundable_client.commands import match_commands
 from soundable_client.config import Config, delete_token, load_token, save_token
 from soundable_client.formatting import ACCENT, fmt_size, fmt_time, track_table
 from soundable_client.inputs import AUDIO_EXTENSIONS, classify, expand_audio_paths, split_paths
@@ -25,32 +26,7 @@ from soundable_client.mpv import Mpv, MpvError, find_mpv, install_hint
 from soundable_client.player import Player, PlayerState
 from soundable_client.screens import ConfirmScreen, EditTrackScreen, LoginResult, LoginScreen
 from soundable_client.views import BrowseView, ListenView, help_text
-from soundable_client.widgets import NowPlaying, PromptInput, StatusHeader, TaskList
-
-COMMANDS = [
-    "/search ",
-    "/recent",
-    "/play ",
-    "/queue",
-    "/queue add ",
-    "/queue rm ",
-    "/queue clear",
-    "/next",
-    "/prev",
-    "/pause",
-    "/stop",
-    "/seek ",
-    "/vol ",
-    "/add ",
-    "/edit ",
-    "/delete ",
-    "/library",
-    "/login",
-    "/logout",
-    "/clear",
-    "/help",
-    "/quit",
-]
+from soundable_client.widgets import CommandMenu, NowPlaying, PromptInput, StatusHeader, TaskList
 
 MODE_VIEWS = {"prompt": "log", "listen": "listen", "browse": "browse"}
 MODE_HINTS = {
@@ -93,7 +69,8 @@ class SoundableApp(App[None]):
             yield BrowseView(id="browse")
         yield TaskList(id="tasks")
         yield NowPlaying(id="np")
-        yield PromptInput(COMMANDS, self.config.history, id="prompt")
+        yield CommandMenu(id="menu")
+        yield PromptInput(self.config.history, id="prompt")
         yield Static("", id="hints")
 
     @property
@@ -114,12 +91,17 @@ class SoundableApp(App[None]):
 
     # --- output helpers ---------------------------------------------------------------
 
+    def _write_text(self, t: Text) -> None:
+        """Wrap text lines at the log's real width (RichLog otherwise measures against the
+        console width, which can be narrower than the widget)."""
+        self.log_view.write(t, expand=True)
+
     def say(self, message: str | Text, kind: str = "info") -> None:
         color = {"info": "white", "ok": "green", "warn": "yellow", "error": "red"}[kind]
         t = Text()
         t.append("⏺ ", style=color if kind != "info" else ACCENT)
         t.append_text(message if isinstance(message, Text) else Text(message))
-        self.log_view.write(t)
+        self._write_text(t)
 
     def show(self, renderable: RenderableType) -> None:
         self.log_view.write(renderable)
@@ -129,7 +111,7 @@ class SoundableApp(App[None]):
         t.append("› ", style="bold dim")
         t.append(line, style="bold")
         self.log_view.write(Text(""))
-        self.log_view.write(t)
+        self._write_text(t)
 
     def show_tracks(self, tracks: list[Track], title: str | None = None) -> None:
         self.last, self.last_kind = tracks, "tracks"
@@ -144,7 +126,7 @@ class SoundableApp(App[None]):
         welcome.append("✻ ", style=f"bold {ACCENT}")
         welcome.append(f"soundable {__version__}", style="bold")
         welcome.append("  ·  /help for commands  ·  Esc listening mode  ·  Ctrl+B browse")
-        self.log_view.write(welcome)
+        self._write_text(welcome)
         self.set_interval(0.25, self._refresh_player_views)
         self.set_interval(15, self._health_tick)
         self.startup()
@@ -254,6 +236,8 @@ class SoundableApp(App[None]):
         self.query_one("#main", ContentSwitcher).current = MODE_VIEWS[mode]
         hints = self.query_one("#hints", Static)
         self.prompt.display = mode == "prompt"
+        if mode != "prompt":
+            self.query_one(CommandMenu).hide()
         hints.display = mode != "prompt"
         hints.update(Text(MODE_HINTS.get(mode, ""), style="dim"))
         if mode == "prompt":
@@ -451,8 +435,8 @@ class SoundableApp(App[None]):
         args = args.strip()
         handler = getattr(self, f"cmd_{name.lower()}", None)
         if handler is None:
-            matches = [c.strip() for c in COMMANDS if c.startswith("/" + name.lower())]
-            hint = f" Did you mean {matches[0]}?" if matches else ""
+            matches = match_commands("/" + name.lower())
+            hint = f" Did you mean {matches[0].name}?" if matches else ""
             self.say(f"Unknown command /{name}.{hint} Type /help for the list.", "warn")
             return
         await handler(args)

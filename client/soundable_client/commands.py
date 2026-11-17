@@ -1,0 +1,53 @@
+"""Slash command catalogue: drives the completion menu and /help."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class CommandSpec:
+    name: str  # e.g. "/play" or "/queue add"
+    args: str  # usage hint, "" if the command takes no arguments
+    help: str
+
+
+COMMAND_SPECS: list[CommandSpec] = [
+    CommandSpec("/search", "<words>", "search the library"),
+    CommandSpec("/recent", "[n]", "recently added tracks"),
+    CommandSpec("/play", "[n|words]", "play the listed tracks from #n, or search and play"),
+    CommandSpec("/queue", "", "show the queue"),
+    CommandSpec("/queue add", "<n…>", "add listed tracks to the queue (1 3 5-7)"),
+    CommandSpec("/queue rm", "<n…>", "remove tracks from the queue"),
+    CommandSpec("/queue clear", "", "empty the queue"),
+    CommandSpec("/next", "", "next track"),
+    CommandSpec("/prev", "", "previous track (or restart this one)"),
+    CommandSpec("/pause", "", "play / pause"),
+    CommandSpec("/stop", "", "stop and clear the queue"),
+    CommandSpec("/seek", "<±sec|m:ss>", "seek, e.g. +30, -10, 1:20"),
+    CommandSpec("/vol", "<0-100|±n>", "set the volume"),
+    CommandSpec("/add", "<path|url>", "upload files or import a link"),
+    CommandSpec("/jobs", "", "recent import jobs"),
+    CommandSpec("/edit", "<n>", "edit title / artist / album of a listed track"),
+    CommandSpec("/delete", "<n>", "delete a listed track from the server"),
+    CommandSpec("/library", "", "browse mode (same as Ctrl+B)"),
+    CommandSpec("/login", "", "log in / change server"),
+    CommandSpec("/logout", "", "revoke and forget the token"),
+    CommandSpec("/clear", "", "clear the screen"),
+    CommandSpec("/help", "", "show help"),
+    CommandSpec("/quit", "", "exit (Ctrl+Q)"),
+]
+
+
+def match_commands(value: str) -> list[CommandSpec]:
+    """Commands to suggest for what has been typed so far ("" -> none)."""
+    v = value.lower()
+    if not v.startswith("/"):
+        return []
+    prefix = [c for c in COMMAND_SPECS if c.name.startswith(v)]
+    if prefix:
+        return prefix
+    if " " in v:
+        return []  # typing arguments: nothing to complete
+    needle = v[1:]
+    return [c for c in COMMAND_SPECS if needle and needle in c.name]

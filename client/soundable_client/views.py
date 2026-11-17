@@ -15,6 +15,7 @@ from textual.widget import Widget
 from textual.widgets import ContentSwitcher, DataTable, Input, Static
 
 from soundable_client.api import Track
+from soundable_client.commands import COMMAND_SPECS
 from soundable_client.formatting import ACCENT, fmt_time, fold, progress_bar, track_table
 from soundable_client.player import PlayerState
 
@@ -105,7 +106,7 @@ class BrowseView(Vertical):
         Binding("d,delete", "delete", "delete/remove"),
         Binding("r", "refresh", "refresh"),
         Binding("slash", "filter", "filter"),
-        Binding("space", "app.player_action('pause')", "play/pause"),
+        Binding("space", "pause", "play/pause"),
         Binding("escape", "back", "prompt"),
     ]
 
@@ -250,6 +251,9 @@ class BrowseView(Vertical):
     def action_refresh(self) -> None:
         self.sapp.load_library()
 
+    def action_pause(self) -> None:
+        self.sapp.player_action("pause")
+
     def action_filter(self) -> None:
         f = self.query_one("#filter", Input)
         f.add_class("visible")
@@ -277,42 +281,29 @@ class BrowseView(Vertical):
 
 
 def help_text() -> Group:
-    rows = [
-        ("", "Just type:"),
-        ("  <YouTube/SoundCloud link>", "import it (milestone 4)"),
-        ("  <file or folder path(s)>", "upload (drag & drop works)"),
-        ("  <anything else>", "search the library"),
-        ("", ""),
-        ("", "Commands:"),
-        ("  /search <words>", "search the library"),
-        ("  /recent", "recently added tracks"),
-        ("  /play [n|words]", "play the listed tracks from #n, or search and play"),
-        ("  /queue", "show the queue"),
-        ("  /queue add <n…>", "add listed tracks to the queue (e.g. 1 3 5-7)"),
-        ("  /queue rm <n…> | clear", "remove from / clear the queue"),
-        ("  /next  /prev  /pause  /stop", "playback"),
-        ("  /seek <±sec|m:ss>", "seek (e.g. /seek +30, /seek 1:20)"),
-        ("  /vol <0-100>", "set volume"),
-        ("  /add <path|url>", "same as typing it"),
-        ("  /edit <n>  /delete <n>", "edit / delete a listed track"),
-        ("  /login  /logout", "change server or account"),
-        ("  /clear  /help  /quit", ""),
-        ("", ""),
-        ("", "Modes:"),
-        ("  Esc", "prompt ⇄ listening mode (←/→ track, ↑/↓ volume, space pause, ,/. seek)"),
-        ("  Ctrl+B", "browse mode (library & queue, Enter play, / filter)"),
-        ("  Media keys", "play/pause/next/prev work system-wide (via mpv)"),
-        ("  Ctrl+Q", "quit"),
-    ]
-    out = []
-    for left, right in rows:
-        t = Text()
-        if left and not right:
-            t.append(left, style="cyan")
-        elif left:
-            t.append(f"{left:<32}", style="cyan")
-            t.append(right, style="dim")
-        else:
-            t.append(right, style="bold")
+    out: list[Text] = []
+
+    def section(title: str) -> None:
+        out.append(Text(title, style="bold"))
+
+    def row(left: str, right: str) -> None:
+        t = Text("  ")
+        t.append(f"{left:<30}", style="cyan")
+        t.append(right, style="dim")
         out.append(t)
+
+    section("Just type:")
+    row("<YouTube/SoundCloud link>", "import it on the server")
+    row("<file or folder path(s)>", "upload (drag & drop works)")
+    row("<anything else>", "search the library")
+    out.append(Text())
+    section("Commands (type / to see them as you type, Tab/Enter to complete):")
+    for c in COMMAND_SPECS:
+        row(f"{c.name} {c.args}".strip(), c.help)
+    out.append(Text())
+    section("Modes:")
+    row("Esc", "prompt <-> listening (←/→ track, ↑/↓ volume, space pause, ,/. seek)")
+    row("Ctrl+B", "browse (library & queue, Enter play, / filter, space pause)")
+    row("Media keys", "play/pause/next/prev work system-wide (via mpv)")
+    row("Ctrl+Q", "quit")
     return Group(*out)
