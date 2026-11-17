@@ -55,3 +55,21 @@ class StreamUrl(BaseModel):
 class ErrorOut(BaseModel):
     detail: str
     existing_track_id: uuid.UUID | None = None
+
+
+class JobOut(BaseModel):
+    id: uuid.UUID
+    type: str
+    status: Literal["queued", "running", "done", "failed"]
+    progress: int
+    url: str | None
+    source: str | None
+    # Filled in by the worker once yt-dlp has read the metadata.
+    title: str | None = None
+    artist: str | None = None
+    error: str | None
+    attempts: int
+    track: TrackOut | None
+    created_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None

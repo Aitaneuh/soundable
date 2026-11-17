@@ -178,7 +178,16 @@ def test_metadata_cleanup() -> None:
     assert clean_title("Song (Official Music Video)") == "Song"
     assert clean_title("Song [Lyrics] (HD)") == "Song"
     assert clean_title("Song (Remix)") == "Song (Remix)"
+    assert clean_title("Song (Official Video) (4K Remaster)") == "Song"
     assert clean_artist("Daft Punk - Topic") == "Daft Punk"
     assert clean_artist("DaftPunkVEVO") == "DaftPunk"
     assert guess_from_filename("01 - Artist - Title (Audio)") == ("Artist", "Title")
     assert guess_from_filename("just_a_title") == (None, "just a title")
+
+
+@needs_ffmpeg
+async def test_webm_upload_probed_with_ffprobe_and_converted(client, auth, tmp_path: Path) -> None:
+    f = make_audio(tmp_path / "clip.webm", freq=next(_freq), codec_args=("-c:a", "libopus"))
+    r = await upload(client, auth, f, title="Webm", artist="X")
+    assert r.status_code == 201, r.text
+    assert (r.json()["mime_type"], r.json()["codec"]) == ("audio/mp4", "aac")

@@ -3,6 +3,7 @@ endpoint and the import worker), and file housekeeping."""
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import os
@@ -111,7 +112,7 @@ async def ingest_file(
         if dup:
             raise DuplicateTrackError(dup)
 
-        info = info or probe(tmp)
+        info = info or await asyncio.to_thread(probe, tmp)
         if not info.ios_friendly:
             converted = new_tmp_path(".m4a")
             produced.append(converted)
@@ -119,7 +120,7 @@ async def ingest_file(
             await convert_to_aac(tmp, converted)
             tmp.unlink(missing_ok=True)
             tmp = converted
-            info = probe(tmp)
+            info = await asyncio.to_thread(probe, tmp)
 
         track_id = uuid.uuid4()
         rel = f"{track_id}.{info.extension}"

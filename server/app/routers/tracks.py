@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from pathlib import Path
@@ -101,7 +102,7 @@ async def upload_track(request: Request, session: SessionDep, _: TokenDep) -> Tr
                 f"unsupported file type '{ext or '?'}' "
                 f"(allowed: {', '.join(sorted(UPLOAD_EXTENSIONS))})"
             )
-        info = probe(up.path)
+        info = await asyncio.to_thread(probe, up.path)
     except NotAudioError as e:
         up.path.unlink(missing_ok=True)
         raise HTTPException(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, str(e)) from None

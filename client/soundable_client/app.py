@@ -8,7 +8,9 @@ import re
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
+from rich import box
 from rich.console import RenderableType
+from rich.table import Table
 from rich.text import Text
 from textual import on, work
 from textual.app import App, ComposeResult
@@ -17,7 +19,7 @@ from textual.screen import ModalScreen
 from textual.widgets import ContentSwitcher, Input, RichLog, Static
 
 from soundable_client import __version__
-from soundable_client.api import Api, ApiError, AuthError, NetworkError, Track
+from soundable_client.api import Api, ApiError, AuthError, Job, NetworkError, Track
 from soundable_client.commands import match_commands
 from soundable_client.config import Config, delete_token, load_token, save_token
 from soundable_client.formatting import ACCENT, fmt_size, fmt_time, track_table
@@ -58,6 +60,7 @@ class SoundableApp(App[None]):
         self.last_kind = "tracks"  # or "queue": what "#n" refers to
         self.online = False
         self._login_open = False
+        self._tracked_jobs: set[str] = set()
 
     # --- layout -----------------------------------------------------------------------
 
@@ -180,6 +183,8 @@ class SoundableApp(App[None]):
         self.header.status = "online"
         _, total = await self.api.tracks(limit=1)
         self.say(f"Connected to {url} as '{me['name']}' · {total} tracks in the library.", "ok")
+        for job in await self.api.jobs(status=["queued", "running"], limit=50):
+            self.track_job(job)
 
     def open_login(self, *, can_cancel: bool = True) -> None:
         if self._login_open:
@@ -660,11 +665,134 @@ class SoundableApp(App[None]):
             self.say(f"Not found: {', '.join(missing) or args}", "error")
 
     async def cmd_import(self, url: str) -> None:
-        self.say(
-            "Link imports (YouTube/SoundCloud) arrive in the next milestone. "
-            "For now you can upload audio files.",
-            "warn",
+        if not await self._ensure_api():
+            return
+        assert self.api
+        try:
+            job, created = await self.api.create_import(url)
+        except ApiError as e:
+            if e.status == 409 and isinstance(e.data, dict) and e.data.get("existing_track_id"):
+                track = await self.api.track(e.data["existing_track_id"])
+                self.last, self.last_kind = [track], "tracks"
+                self.say(
+                    Text.assemble(
+                        "Already in your library: ",
+                        (track.title, "bold"),
+                        " — ",
+                        (track.artist, "cyan"),
+                        ("  · /play 1 to play it", "dim"),
+                    ),
+                    "warn",
+                )
+                return
+            if e.status == 400:
+                self.say(str(e), "warn")
+                return
+            raise
+        if not created:
+            self.say("That link is already being imported.")
+        self.track_job(job)
+
+    def track_job(self, job: Job) -> None:
+        if job.id in self._tracked_jobs:
+            return
+        self._tracked_jobs.add(job.id)
+        self.run_worker(self._follow_job(job), group="jobs")
+
+    async def _follow_job(self, job: Job) -> None:
+        """Spinner line that follows a server-side import until it finishes."""
+        tid = self.tasks.add(f"Queued: {job.label}")
+        failures = 0
+        try:
+            while True:
+                if job.status == "running":
+                    self.tasks.update_task(
+                        tid, label=f"Importing {job.label}", progress=job.progress / 100
+                    )
+                elif job.status == "queued":
+                    state = f"Retrying soon ({job.error})" if job.error else "Queued"
+                    self.tasks.update_task(tid, label=f"{state}: {job.label}")
+                else:
+                    break
+                await asyncio.sleep(1.0)
+                if not self.api:
+                    return
+                try:
+                    job = await self.api.job(job.id)
+                    failures = 0
+                except NetworkError:
+                    failures += 1  # keep following; the header shows we're offline
+                    await asyncio.sleep(min(30, 2 * failures))
+                except ApiError as e:
+                    self._api_error(e)
+                    return
+        finally:
+            self.tasks.done(tid)
+            self._tracked_jobs.discard(job.id)
+
+        if job.status == "done" and job.track:
+            t = job.track
+            self.last, self.last_kind = [t], "tracks"
+            self.say(
+                Text.assemble(
+                    ("Imported ", ""),
+                    (t.title, "bold"),
+                    " — ",
+                    (t.artist, "cyan"),
+                    (f"  {fmt_time(t.duration)} · {t.codec or ''} · {t.source}", "dim"),
+                ),
+                "ok",
+            )
+            self.say(Text("/play 1 to play · /edit 1 to fix the title/artist", style="dim"))
+            browse = self.query_one(BrowseView)
+            if browse.library:
+                browse.set_library([*browse.library, t])
+        elif job.track:  # failed as a duplicate: the server tells us which track
+            self.last, self.last_kind = [job.track], "tracks"
+            self.say(f"{job.error}  · /play 1 to play it", "warn")
+        else:
+            self.say(f"Import failed: {job.error or 'unknown error'}  ({job.url})", "error")
+
+    async def cmd_jobs(self, args: str) -> None:
+        if not await self._ensure_api():
+            return
+        assert self.api
+        jobs = await self.api.jobs(limit=15)
+        sub, _, rest = args.partition(" ")
+        if sub == "retry":
+            failed = [j for j in jobs if j.status == "failed"]
+            idx = self._numbers(rest, len(jobs))
+            if idx is None or len(idx) != 1 or jobs[idx[0]].status != "failed":
+                hint = " (no failed jobs)" if not failed else ""
+                self.say(f"Usage: /jobs retry <n> with the # of a failed job{hint}", "warn")
+                return
+            job = await self.api.retry_job(jobs[idx[0]].id)
+            self.say(f"Retrying {job.label}")
+            self.track_job(job)
+            return
+        if not jobs:
+            self.say("No imports yet. Paste a YouTube or SoundCloud link to import one.")
+            return
+        table = Table(
+            box=box.SIMPLE_HEAD,
+            header_style="dim",
+            pad_edge=False,
+            title="Recent imports",
+            title_justify="left",
+            title_style="bold",
         )
+        table.add_column("#", justify="right", style="dim")
+        table.add_column("Status")
+        table.add_column("Track", overflow="ellipsis", max_width=50)
+        table.add_column("Details", style="dim", overflow="fold", max_width=60)
+        styles = {"done": "green", "failed": "red", "running": ACCENT, "queued": "yellow"}
+        for i, j in enumerate(jobs, 1):
+            status = j.status + (f" {j.progress}%" if j.status == "running" else "")
+            detail = j.error or (j.track.source if j.track else j.url or "")
+            table.add_row(str(i), Text(status, style=styles.get(j.status, "")), j.label, detail)
+        self.show(table)
+        if any(j.status == "failed" for j in jobs):
+            self.say(Text("/jobs retry <n> to retry a failed import", style="dim"))
 
     def _pick(self, args: str, verb: str) -> Track | None:
         in_queue = self.last_kind == "queue" and self.player is not None

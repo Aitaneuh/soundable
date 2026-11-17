@@ -15,7 +15,7 @@ _NOISE_WORDS = (
     r"video\s*officielle?",
     r"music\s*video",
     r"explicit",
-    r"remaster(ed)?(\s*\d{4})?|\d{4}\s*remaster(ed)?",
+    r"(4k\s+|hd\s+)?remaster(ed)?(\s*\d{4})?|\d{4}\s*remaster(ed)?|4k\s+version",
 )
 _NOISE_RE = re.compile(r"\s*[\(\[]\s*(?:" + "|".join(_NOISE_WORDS) + r")\s*[\)\]]", re.IGNORECASE)
 _SPLIT_RE = re.compile(r"\s+[-–—|]\s+")  # noqa: RUF001 (hyphen, en dash, em dash, pipe)

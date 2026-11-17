@@ -131,6 +131,7 @@ class Job(TimestampMixin, Base):
     result_track_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("tracks.id", ondelete="SET NULL")
     )
+    result_track: Mapped[Track | None] = relationship(lazy="selectin")
     attempts: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0)
     # Earliest time the job may be picked (used for retry backoff).
     run_after: Mapped[datetime] = mapped_column(

@@ -50,6 +50,21 @@ services:
       proxy:
         aliases: [soundable-api]
 
+  worker:
+    <<: *app
+    command: ["worker"]
+    networks: [internal]
+    # Only if YouTube starts asking for sign-in: mount a cookies.txt (Netscape format)
+    # and set YTDLP_COOKIES_FILE=/run/ytdlp/cookies.txt in the stack environment.
+    # volumes:
+    #   - music:/data/music
+    #   - /path/on/host/cookies.txt:/run/ytdlp/cookies.txt:ro
+    # The image's healthcheck probes the HTTP API, which the worker doesn't serve.
+    healthcheck:
+      disable: true
+    # Give an in-flight download a chance to finish; a killed job is re-queued later.
+    stop_grace_period: 30s
+
 networks:
   internal: {}
   # The network your cloudflared container is attached to. cloudflared then reaches

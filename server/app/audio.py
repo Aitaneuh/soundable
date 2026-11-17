@@ -9,7 +9,9 @@ high bitrate is the least bad option when the source is already lossy.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -96,13 +98,17 @@ def _first_tag(f: mutagen.FileType, key: str) -> str | None:
 
 
 def probe(path: Path) -> AudioInfo:
-    """Raise NotAudioError unless mutagen recognises the file as audio with a duration."""
+    """Raise NotAudioError unless the file is audio with a duration.
+
+    mutagen first (fast, pure Python); ffprobe for containers mutagen can't read, notably
+    WebM/Matroska (YouTube's Opus streams). Blocking: call via asyncio.to_thread in async code.
+    """
     try:
         f = mutagen.File(path, easy=True)
-    except Exception as e:  # mutagen raises many different error types on garbage
-        raise NotAudioError(f"not a readable audio file ({e.__class__.__name__})") from e
+    except Exception:  # mutagen raises many different error types on garbage
+        f = None
     if f is None or f.info is None:
-        raise NotAudioError("not a recognised audio file")
+        return _ffprobe(path)
     duration = float(getattr(f.info, "length", 0) or 0)
     if duration <= 0:
         raise NotAudioError("audio file has no duration")
@@ -117,6 +123,57 @@ def probe(path: Path) -> AudioInfo:
     return AudioInfo(
         kind=kind,
         codec=codec,
+        duration=duration,
+        bitrate_kbps=round(bitrate / 1000) or None,
+        tags=tags,
+    )
+
+
+def _ffprobe(path: Path) -> AudioInfo:
+    try:
+        out = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-print_format",
+                "json",
+                "-show_format",
+                "-show_streams",
+                str(path),
+            ],
+            capture_output=True,
+            timeout=60,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise NotAudioError(f"could not probe file ({e.__class__.__name__})") from e
+    try:
+        data = json.loads(out.stdout or b"{}")
+    except ValueError:
+        data = {}
+    audio = next((st for st in data.get("streams", []) if st.get("codec_type") == "audio"), None)
+    fmt = data.get("format") or {}
+    if out.returncode != 0 or audio is None:
+        raise NotAudioError("not a recognised audio file")
+    try:
+        duration = float(fmt.get("duration") or audio.get("duration") or 0)
+    except ValueError:
+        duration = 0.0
+    if duration <= 0:
+        raise NotAudioError("audio file has no duration")
+    bitrate = int(fmt.get("bit_rate") or audio.get("bit_rate") or 0) or int(
+        path.stat().st_size * 8 / duration
+    )
+    raw_tags = {**(fmt.get("tags") or {}), **(audio.get("tags") or {})}
+    tags = {
+        k: str(v).strip()
+        for k, v in ((key.lower(), val) for key, val in raw_tags.items())
+        if k in ("title", "artist", "album") and str(v).strip()
+    }
+    return AudioInfo(
+        kind="ffprobe:" + str(fmt.get("format_name", "unknown")),
+        codec=str(audio.get("codec_name", "unknown")),
         duration=duration,
         bitrate_kbps=round(bitrate / 1000) or None,
         tags=tags,

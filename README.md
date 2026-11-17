@@ -39,7 +39,7 @@ Inside the app, just type:
 
 | You type | What happens |
 | --- | --- |
-| a YouTube / SoundCloud link | imports it on the server (milestone 4) |
+| a YouTube / SoundCloud link | imports it on the server (progress shown live) |
 | file or folder path(s), drag & drop works | uploads them |
 | anything else | searches the library |
 | `/help` | all commands |
@@ -47,6 +47,41 @@ Inside the app, just type:
 Modes: **prompt** (default) · **listening** (`Esc`: ←/→ prev/next, ↑/↓ volume ±5 %,
 space pause, `,`/`.` seek ±10 s) · **browse** (`Ctrl+B`: navigate library and queue,
 Enter to play, `/` to filter). Windows media keys control playback too (via mpv).
+
+## Link imports (YouTube / SoundCloud)
+
+Pasting a link creates a job; the `worker` container downloads it with yt-dlp and adds it
+to the library. `/jobs` in the client shows recent imports, `/jobs retry <n>` retries one.
+
+- Only single tracks: YouTube videos (a `watch?v=…&list=…` link imports just that video)
+  and SoundCloud tracks (incl. private `s-…` links and `on.soundcloud.com` short links).
+  Playlists / sets are refused for now.
+- Audio: YouTube's AAC stream (m4a) is preferred because iPhones play it natively. Anything
+  iOS can't play (Opus/WebM…) is converted once to AAC 256 kbps.
+- Duplicates are refused (same video / SoundCloud track id, or identical file content).
+- Transient failures (network, HTTP 5xx, rate limiting) are retried 3 times with backoff;
+  permanent ones (removed/private video, bot check…) fail with a readable message.
+
+### Update yt-dlp
+
+YouTube changes often and yt-dlp follows. yt-dlp is pinned in `server/uv.lock`; to update:
+
+```sh
+uv lock --directory server --upgrade-package yt-dlp --upgrade-package yt-dlp-ejs
+git commit -am "Update yt-dlp" && git push
+```
+
+then in Portainer: *Stacks → soundable → Pull and redeploy* (with "re-pull image and
+redeploy" + rebuild). yt-dlp also needs Deno for YouTube; its version is pinned in
+`server/Dockerfile` (`denoland/deno:bin-…`), bump it there if yt-dlp asks for a newer one.
+
+### "Sign in to confirm you're not a bot"
+
+If YouTube starts asking for this, export cookies from a browser where you're logged in to
+YouTube (a throwaway account is safer) as a Netscape `cookies.txt`, put it on the server,
+uncomment the cookie mount in `docker-compose.yml` and set
+`YTDLP_COOKIES_FILE=/run/ytdlp/cookies.txt`. The file is mounted read-only; the worker uses
+a private copy.
 
 ## Server development
 

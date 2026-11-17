@@ -61,6 +61,45 @@ class Track:
         )
 
 
+@dataclass(frozen=True)
+class Job:
+    id: str
+    status: str  # queued | running | done | failed
+    progress: int
+    url: str | None
+    source: str | None
+    title: str | None
+    artist: str | None
+    error: str | None
+    attempts: int
+    track: Track | None
+
+    @classmethod
+    def from_json(cls, d: dict[str, Any]) -> Job:
+        return cls(
+            id=d["id"],
+            status=d["status"],
+            progress=int(d.get("progress") or 0),
+            url=d.get("url"),
+            source=d.get("source"),
+            title=d.get("title"),
+            artist=d.get("artist"),
+            error=d.get("error"),
+            attempts=int(d.get("attempts") or 0),
+            track=Track.from_json(d["track"]) if d.get("track") else None,
+        )
+
+    @property
+    def active(self) -> bool:
+        return self.status in ("queued", "running")
+
+    @property
+    def label(self) -> str:
+        if self.title:
+            return f"{self.title} — {self.artist}" if self.artist else self.title
+        return self.url or "?"
+
+
 def _detail(resp: httpx.Response) -> tuple[str, Any]:
     try:
         data = resp.json()
@@ -165,6 +204,27 @@ class Api:
         """Absolute signed URL that mpv can open without headers."""
         data = (await self._request("GET", f"/api/tracks/{track_id}/stream-url")).json()
         return self.base_url + data["url"]
+
+    # --- imports / jobs ------------------------------------------------------------------
+
+    async def create_import(self, url: str) -> tuple[Job, bool]:
+        """Returns (job, created). created=False means the link was already being imported.
+        Raises ApiError(409, data={'existing_track_id': ...}) if it's already in the library."""
+        resp = await self._request("POST", "/api/imports", json={"url": url})
+        return Job.from_json(resp.json()), resp.status_code == 201
+
+    async def job(self, job_id: str) -> Job:
+        return Job.from_json((await self._request("GET", f"/api/jobs/{job_id}")).json())
+
+    async def jobs(self, status: list[str] | None = None, limit: int = 20) -> list[Job]:
+        params: dict[str, Any] = {"limit": limit}
+        if status:
+            params["status"] = status
+        resp = await self._request("GET", "/api/jobs", params=params)
+        return [Job.from_json(j) for j in resp.json()]
+
+    async def retry_job(self, job_id: str) -> Job:
+        return Job.from_json((await self._request("POST", f"/api/jobs/{job_id}/retry")).json())
 
     async def upload(self, path: Path, progress: Callable[[int, int], None] | None = None) -> Track:
         """Streams the file as multipart/form-data, reporting (sent, total) bytes."""
