@@ -44,6 +44,12 @@ Inside the app, just type:
 | anything else | searches the library |
 | `/help` | all commands |
 
+Playlists: `/playlists`, `/playlist new <name>`, `/playlist add <name> 1 3 5-7` (numbers
+from the last list shown), `/playlist play <name> [shuffle]`, `/playlist save <name>` (the
+current queue), `show`, `rm`, `move`, `rename … -> …`, `delete`. Or in browse mode
+(`Ctrl+B`, Playlists tab): Enter plays, → opens, `n` new, `e` rename, `d` delete,
+Shift+↑/↓ reorders, and `p` on any track adds it to a playlist.
+
 Modes: **prompt** (default) · **listening** (`Esc`: ←/→ prev/next, ↑/↓ volume ±5 %,
 space pause, `,`/`.` seek ±10 s) · **browse** (`Ctrl+B`: navigate library and queue,
 Enter to play, `/` to filter). Windows media keys control playback too (via mpv).

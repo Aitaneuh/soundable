@@ -96,3 +96,18 @@ async def test_space_pauses_in_browse(isolated, monkeypatch) -> None:
         assert app.mode == "browse"
         await pilot.press("space")
         assert calls == ["pause"]
+
+
+def test_split_playlist_ref_and_numbers() -> None:
+    app = appmod.SoundableApp(Config())
+    assert app._split_ref_numbers("chill vibes 1 3 5-7") == ("chill vibes", "1 3 5-7")
+    assert app._split_ref_numbers("road") == ("road", "")
+    assert app._split_ref_numbers("2 4") == ("2", "4")  # playlist #2, track 4
+    assert app._split_ref_numbers("top 50 3") == ("top", "50 3")  # numeric-ending names: ambiguous
+
+
+def test_playlist_commands_in_menu() -> None:
+    from soundable_client.commands import match_commands
+
+    names = [c.name for c in match_commands("/playlist ")]
+    assert "/playlist play" in names and "/playlist save" in names

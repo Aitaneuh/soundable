@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import random
 import re
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -19,14 +20,22 @@ from textual.screen import ModalScreen
 from textual.widgets import ContentSwitcher, Input, RichLog, Static
 
 from soundable_client import __version__
-from soundable_client.api import Api, ApiError, AuthError, Job, NetworkError, Track
+from soundable_client.api import Api, ApiError, AuthError, Job, NetworkError, Playlist, Track
 from soundable_client.commands import match_commands
 from soundable_client.config import Config, delete_token, load_token, save_token
-from soundable_client.formatting import ACCENT, fmt_size, fmt_time, track_table
+from soundable_client.formatting import ACCENT, fmt_size, fmt_time, fold, track_table
 from soundable_client.inputs import AUDIO_EXTENSIONS, classify, expand_audio_paths, split_paths
 from soundable_client.mpv import Mpv, MpvError, find_mpv, install_hint
 from soundable_client.player import Player, PlayerState
-from soundable_client.screens import ConfirmScreen, EditTrackScreen, LoginResult, LoginScreen
+from soundable_client.screens import (
+    NEW_PLAYLIST,
+    ConfirmScreen,
+    EditTrackScreen,
+    LoginResult,
+    LoginScreen,
+    NameScreen,
+    PlaylistPickerScreen,
+)
 from soundable_client.views import BrowseView, ListenView, help_text
 from soundable_client.widgets import CommandMenu, NowPlaying, PromptInput, StatusHeader, TaskList
 
@@ -34,8 +43,8 @@ MODE_VIEWS = {"prompt": "log", "listen": "listen", "browse": "browse"}
 MODE_HINTS = {
     "listen": "←/→ prev/next · ↑/↓ volume · space pause · ,/. seek ±10s · "
     "Esc prompt · Ctrl+B browse",
-    "browse": "↑/↓ move · Enter play · a queue · e edit · d delete · Tab library/queue · "
-    "/ filter · space pause · Esc prompt",
+    "browse": "Tab/Shift+Tab switch Library · Playlists · Queue · Enter play · "
+    "space pause · Esc back/prompt",
 }
 
 
@@ -61,6 +70,8 @@ class SoundableApp(App[None]):
         self.online = False
         self._login_open = False
         self._tracked_jobs: set[str] = set()
+        self.last_playlists: list[Playlist] = []
+        self.last_playlist: Playlist | None = None
 
     # --- layout -----------------------------------------------------------------------
 
@@ -97,7 +108,10 @@ class SoundableApp(App[None]):
     def _write_text(self, t: Text) -> None:
         """Wrap text lines at the log's real width (RichLog otherwise measures against the
         console width, which can be narrower than the widget)."""
-        self.log_view.write(t, expand=True)
+        if self.log_view.scrollable_content_region.width >= 20:
+            self.log_view.write(t, expand=True)
+        else:  # log hidden (browse/listen mode): it reports a zero width
+            self.log_view.write(t, width=max(self.size.width - 4, 40))
 
     def say(self, message: str | Text, kind: str = "info") -> None:
         color = {"info": "white", "ok": "green", "warn": "yellow", "error": "red"}[kind]
@@ -299,10 +313,12 @@ class SoundableApp(App[None]):
         self.run_worker(actions[what](), group="player")
 
     @work(group="player")
-    async def play_tracks(self, tracks: list[Track], start: int = 0) -> None:
+    async def play_tracks(
+        self, tracks: list[Track], start: int = 0, context: str | None = None
+    ) -> None:
         p = self._need_player()
         if p and tracks:
-            await p.play_list(tracks, start)
+            await p.play_list(tracks, start, context=context)
             t = tracks[start]
             self.say(Text.assemble(("Playing ", ""), (t.title, "bold"), " — ", (t.artist, "cyan")))
 
@@ -388,6 +404,398 @@ class SoundableApp(App[None]):
         browse.set_library(sub(browse.library))
         if self.player:
             self.player.state.queue = sub(self.player.state.queue)
+
+    # --- playlists (shared by commands and browse mode) -------------------------------
+
+    def _browse(self) -> BrowseView:
+        return self.query_one(BrowseView)
+
+    @work(exclusive=True, group="playlists")
+    async def load_playlists(self) -> None:
+        if not self.api or not self.api.token:
+            return
+        try:
+            self._browse().set_playlists(await self.api.playlists())
+        except ApiError as e:
+            self._api_error(e)
+
+    async def _after_playlist_change(self, updated: Playlist | None = None) -> None:
+        """Refresh browse mode after a playlist mutation."""
+        browse = self._browse()
+        if updated is not None and browse.open is not None and browse.open.id == updated.id:
+            browse.show_playlist(updated)
+        if self.api:
+            with contextlib.suppress(ApiError):
+                browse.set_playlists(await self.api.playlists())
+
+    @work(group="playlists")
+    async def open_playlist(self, playlist: Playlist) -> None:
+        if not self.api:
+            return
+        try:
+            self._browse().show_playlist(await self.api.playlist(playlist.id), cursor=0)
+        except ApiError as e:
+            self._api_error(e)
+
+    @work(group="player")
+    async def play_playlist(self, playlist: Playlist, shuffle: bool = False) -> None:
+        if not self.api or not (p := self._need_player()):
+            return
+        try:
+            full = await self.api.playlist(playlist.id)
+        except ApiError as e:
+            self._api_error(e)
+            return
+        tracks = list(full.tracks)
+        if not tracks:
+            self.say(f"Playlist '{full.name}' is empty.", "warn")
+            return
+        if shuffle:
+            random.shuffle(tracks)
+        await p.play_list(tracks, 0, context=full.name)
+        how = "Shuffling" if shuffle else "Playing"
+        self.say(
+            Text.assemble(
+                f"{how} playlist ",
+                (full.name, f"bold {ACCENT}"),
+                (f"  {len(tracks)} tracks · {fmt_time(full.duration)}", "dim"),
+            )
+        )
+
+    def add_to_playlist_interactive(self, tracks: list[Track], what: str) -> None:
+        """Ask which playlist (or a new one) and add `tracks` to it."""
+
+        async def run() -> None:
+            if not self.api:
+                return
+            try:
+                playlists = await self.api.playlists()
+            except ApiError as e:
+                self._api_error(e)
+                return
+
+            async def chosen(choice: str | None) -> None:
+                if choice is None:
+                    return
+                if choice == NEW_PLAYLIST:
+                    self.new_playlist_interactive(tracks)
+                    return
+                target = next(p for p in playlists if p.id == choice)
+                await self._add_tracks(target, tracks)
+
+            self.push_screen(
+                PlaylistPickerScreen(playlists, what), lambda c: self.run_worker(chosen(c))
+            )
+
+        self.run_worker(run(), group="playlists")
+
+    async def _add_tracks(self, playlist: Playlist, tracks: list[Track]) -> None:
+        assert self.api
+        try:
+            updated = await self.api.add_to_playlist(playlist.id, [t.id for t in tracks])
+        except ApiError as e:
+            self._api_error(e)
+            return
+        what = f"'{tracks[0].title}'" if len(tracks) == 1 else f"{len(tracks)} tracks"
+        n = updated.track_count
+        self.say(f"Added {what} to '{updated.name}' ({n} track{'s' * (n != 1)}).", "ok")
+        self.notify(f"Added {what} to {updated.name}")
+        await self._after_playlist_change(updated)
+
+    def new_playlist_interactive(self, tracks: list[Track]) -> None:
+        async def created(name: str | None) -> None:
+            if name:
+                await self._create_playlist(name, tracks)
+
+        self.push_screen(
+            NameScreen("New playlist", placeholder="name"), lambda n: self.run_worker(created(n))
+        )
+
+    async def _create_playlist(self, name: str, tracks: list[Track]) -> Playlist | None:
+        if not self.api:
+            return None
+        try:
+            p = await self.api.create_playlist(name, [t.id for t in tracks])
+        except ApiError as e:
+            if e.status in (400, 409):
+                self.say(str(e), "warn")
+                return None
+            self._api_error(e)
+            return None
+        extra = f" with {p.track_count} tracks" if p.track_count else ""
+        self.say(f"Created playlist '{p.name}'{extra}.", "ok")
+        await self._after_playlist_change()
+        return p
+
+    def rename_playlist_interactive(self, playlist: Playlist) -> None:
+        async def renamed(name: str | None) -> None:
+            if name and name != playlist.name:
+                await self._rename_playlist(playlist, name)
+
+        self.push_screen(
+            NameScreen("Rename playlist", initial=playlist.name),
+            lambda n: self.run_worker(renamed(n)),
+        )
+
+    async def _rename_playlist(self, playlist: Playlist, name: str) -> None:
+        assert self.api
+        try:
+            p = await self.api.rename_playlist(playlist.id, name)
+        except ApiError as e:
+            if e.status in (400, 409):
+                self.say(str(e), "warn")
+                return
+            self._api_error(e)
+            return
+        self.say(f"Renamed '{playlist.name}' to '{p.name}'.", "ok")
+        await self._after_playlist_change(p)
+
+    def delete_playlist_interactive(self, playlist: Playlist) -> None:
+        async def apply(yes: bool | None) -> None:
+            if not yes or not self.api:
+                return
+            try:
+                await self.api.delete_playlist(playlist.id)
+            except ApiError as e:
+                self._api_error(e)
+                return
+            self.say(f"Deleted playlist '{playlist.name}' (the tracks stay in your library).", "ok")
+            await self._after_playlist_change()
+
+        q = Text.assemble("Delete playlist ", (playlist.name, "bold"), "?")
+        q.append("\nThe tracks themselves stay in your library.", style="dim")
+        self.push_screen(ConfirmScreen(q), lambda yes: self.run_worker(apply(yes)))
+
+    @work(group="playlists")
+    async def remove_from_playlist(self, playlist: Playlist, positions: list[int]) -> None:
+        if not self.api:
+            return
+        try:
+            p = await self.api.remove_from_playlist(playlist.id, positions)
+        except ApiError as e:
+            self._api_error(e)
+            return
+        n = len(positions)
+        self.say(f"Removed {n} track{'s' * (n != 1)} from '{p.name}'.")
+        await self._after_playlist_change(p)
+
+    @work(group="playlists")
+    async def move_in_playlist(self, playlist: Playlist, src: int, dst: int) -> None:
+        if not self.api:
+            return
+        try:
+            p = await self.api.move_in_playlist(playlist.id, src, dst)
+        except ApiError as e:
+            self._api_error(e)
+            return
+        self._browse().show_playlist(p, cursor=dst)
+
+    # --- /playlist commands -------------------------------------------------------------
+
+    async def _resolve_playlist(self, ref: str) -> Playlist | None:
+        """A playlist by number (from the last /playlists listing) or by name
+        (exact, then unique prefix/substring, case-insensitive)."""
+        assert self.api
+        ref = ref.strip()
+        if not ref:
+            self.say("Which playlist? Give its name or its number from /playlists.", "warn")
+            return None
+        if ref.isdigit() and self.last_playlists and 1 <= int(ref) <= len(self.last_playlists):
+            return self.last_playlists[int(ref) - 1]
+        playlists = await self.api.playlists()
+        key = fold(ref)
+        for matcher in (
+            lambda p: fold(p.name) == key,
+            lambda p: fold(p.name).startswith(key),
+            lambda p: key in fold(p.name),
+        ):
+            found = [p for p in playlists if matcher(p)]
+            if len(found) == 1:
+                return found[0]
+            if len(found) > 1:
+                names = ", ".join(f"'{p.name}'" for p in found[:5])
+                self.say(f"'{ref}' matches several playlists: {names}. Be more specific.", "warn")
+                return None
+        self.say(f"No playlist called '{ref}'. /playlists lists them.", "warn")
+        return None
+
+    def _split_ref_numbers(self, rest: str) -> tuple[str, str]:
+        """'chill vibes 1 3 5-7' -> ('chill vibes', '1 3 5-7')."""
+        tokens = rest.split()
+        k = len(tokens)
+        while k > 0 and re.fullmatch(r"\d+(-\d+)?", tokens[k - 1]):
+            k -= 1
+        if k == 0 and tokens:  # only numbers: first one is the playlist number
+            k = 1
+        return " ".join(tokens[:k]), " ".join(tokens[k:])
+
+    async def _ref_and_numbers(self, rest: str) -> tuple[Playlist | None, str, bool]:
+        """Split '<playlist> <numbers…>'. An exact playlist name wins even if it ends with
+        digits ('Top 50 3' -> playlist 'Top 50', '3'). Returns (playlist, numbers, had_ref)."""
+        assert self.api
+        tokens = rest.split()
+        by_name = {fold(p.name): p for p in await self.api.playlists()}
+        for k in range(len(tokens), 0, -1):
+            if p := by_name.get(fold(" ".join(tokens[:k]))):
+                return p, " ".join(tokens[k:]), True
+        ref, nums = self._split_ref_numbers(rest)
+        if not ref:
+            return None, nums, False
+        return await self._resolve_playlist(ref), nums, True
+
+    async def cmd_playlists(self, _: str) -> None:
+        if not await self._ensure_api():
+            return
+        assert self.api
+        playlists = await self.api.playlists()
+        self.last_playlists = playlists
+        if not playlists:
+            self.say(
+                "No playlists yet. /playlist new <name>, or /playlist save <name> to "
+                "save the current queue."
+            )
+            return
+        table = Table(
+            box=box.SIMPLE_HEAD,
+            header_style="dim",
+            pad_edge=False,
+            title="Playlists",
+            title_justify="left",
+            title_style="bold",
+        )
+        table.add_column("#", justify="right", style="dim")
+        table.add_column("Name", style=f"bold {ACCENT}")
+        table.add_column("Tracks", justify="right")
+        table.add_column("Duration", justify="right", style="dim")
+        for i, p in enumerate(playlists, 1):
+            table.add_row(str(i), p.name, str(p.track_count), fmt_time(p.duration))
+        self.show(table)
+        self.say(
+            Text(
+                "/playlist play <n|name> · /playlist show <n|name> · Ctrl+B to browse", style="dim"
+            )
+        )
+        self._browse().set_playlists(playlists)
+
+    async def cmd_playlist(self, args: str) -> None:
+        if not await self._ensure_api():
+            return
+        assert self.api
+        sub, _, rest = args.strip().partition(" ")
+        sub, rest = sub.lower(), rest.strip()
+        if not sub or sub in ("ls", "list"):
+            await self.cmd_playlists("")
+            return
+
+        if sub in ("new", "create"):
+            if not rest:
+                self.say("Usage: /playlist new <name>", "warn")
+                return
+            await self._create_playlist(rest, [])
+            return
+
+        if sub == "save":
+            queue = self.player_state().queue
+            if not rest:
+                self.say("Usage: /playlist save <name>  (saves the current queue)", "warn")
+                return
+            if not queue:
+                self.say("The queue is empty: nothing to save.", "warn")
+                return
+            await self._create_playlist(rest, list(queue))
+            return
+
+        if sub in ("play", "shuffle"):
+            shuffle = sub == "shuffle"
+            if rest.lower().endswith(" shuffle"):
+                rest, shuffle = rest[: -len(" shuffle")], True
+            if p := await self._resolve_playlist(rest):
+                self.play_playlist(p, shuffle=shuffle)
+            return
+
+        if sub in ("show", "open"):
+            if p := await self._resolve_playlist(rest):
+                full = await self.api.playlist(p.id)
+                self.last, self.last_kind = list(full.tracks), "playlist"
+                self.last_playlist = full
+                title = f"{full.name} · {full.track_count} tracks · {fmt_time(full.duration)}"
+                self.show(track_table(list(full.tracks), title=title))
+                self.say(
+                    Text(
+                        "/play <n> to play from #n · /playlist rm "
+                        f"{full.name} <n> to remove · /playlist move {full.name} <from> <to>",
+                        style="dim",
+                    )
+                )
+            return
+
+        if sub == "add":
+            p, nums, had_ref = await self._ref_and_numbers(rest)
+            source = self._current_list()
+            idx = self._numbers(nums, len(source)) if nums else None
+            if not had_ref or idx is None:
+                self.say(
+                    "Usage: /playlist add <name|n> <track numbers…> (numbers from the "
+                    "last list shown, e.g. after a search)",
+                    "warn",
+                )
+                return
+            if p is not None:
+                await self._add_tracks(p, [source[i] for i in idx])
+            return
+
+        if sub in ("rm", "remove"):
+            p, nums, had_ref = await self._ref_and_numbers(rest)
+            if not had_ref:
+                self.say("Usage: /playlist rm <name|n> <positions…>", "warn")
+                return
+            if p is None:
+                return
+            idx = self._numbers(nums, p.track_count)
+            if idx is None:
+                self.say(f"Usage: /playlist rm {p.name} <positions 1-{p.track_count}>", "warn")
+                return
+            self.remove_from_playlist(p, idx)
+            return
+
+        if sub == "move":
+            p, nums, had_ref = await self._ref_and_numbers(rest)
+            parts = nums.split()
+            if not had_ref or len(parts) != 2:
+                self.say("Usage: /playlist move <name|n> <from> <to>", "warn")
+                return
+            if p is not None:
+                src, dst = int(parts[0]) - 1, int(parts[1]) - 1
+                if not (0 <= src < p.track_count and 0 <= dst < p.track_count):
+                    self.say(f"Positions must be between 1 and {p.track_count}.", "warn")
+                    return
+                updated = await self.api.move_in_playlist(p.id, src, dst)
+                self.say(f"Moved #{src + 1} to #{dst + 1} in '{updated.name}'.", "ok")
+                await self._after_playlist_change(updated)
+            return
+
+        if sub == "rename":
+            old, sep, new = rest.partition("->")
+            if not sep or not old.strip() or not new.strip():
+                self.say("Usage: /playlist rename <name|n> -> <new name>", "warn")
+                return
+            if p := await self._resolve_playlist(old):
+                await self._rename_playlist(p, new.strip())
+            return
+
+        if sub in ("delete", "del"):
+            if p := await self._resolve_playlist(rest):
+                self.delete_playlist_interactive(p)
+            return
+
+        self.say(
+            f"Unknown subcommand '{sub}'. Type /playlist and pick from the menu, or /help.", "warn"
+        )
+
+    def _current_list(self) -> list[Track]:
+        if self.last_kind == "queue" and self.player:
+            return self.player.state.queue
+        return self.last
 
     # --- prompt -----------------------------------------------------------------------
 
@@ -545,7 +953,12 @@ class SoundableApp(App[None]):
             if not 1 <= n <= len(self.last):
                 self.say("No such number in the last list. Search first, then /play <n>.", "warn")
                 return
-            self.play_tracks(self.last, n - 1)
+            ctx = (
+                self.last_playlist.name
+                if self.last_kind == "playlist" and self.last_playlist
+                else None
+            )
+            self.play_tracks(self.last, n - 1, context=ctx)
             return
         # free text: search and play the results
         if not await self._ensure_api():

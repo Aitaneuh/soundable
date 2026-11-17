@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import platform
 
+from rich.text import Text
 from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
-from textual.widgets import Button, Input, Label, Static
+from textual.widgets import Button, Input, Label, OptionList, Static
+from textual.widgets.option_list import Option
 
-from soundable_client.api import Api, ApiError, AuthError, NetworkError, Track
+from soundable_client.api import Api, ApiError, AuthError, NetworkError, Playlist, Track
 from soundable_client.config import InvalidServerUrl, normalize_server_url
 from soundable_client.formatting import ACCENT
 
@@ -173,3 +175,70 @@ class ConfirmScreen(ModalScreen[bool]):
     @on(Button.Pressed)
     def _pressed(self, event: Button.Pressed) -> None:
         self.dismiss(event.button.id == "yes")
+
+
+class NameScreen(ModalScreen[str | None]):
+    """Ask for a single line of text (e.g. a playlist name)."""
+
+    BINDINGS = [Binding("escape", "cancel", show=False)]
+
+    def __init__(self, title: str, initial: str = "", placeholder: str = "") -> None:
+        super().__init__()
+        self.title_text = title
+        self.initial = initial
+        self.placeholder = placeholder
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="dialog"):
+            yield Static(f"[bold]{self.title_text}[/]")
+            yield Input(self.initial, placeholder=self.placeholder, id="name")
+            yield Static("[dim]Enter to confirm · Esc to cancel[/]")
+
+    def on_mount(self) -> None:
+        self.query_one("#name", Input).focus()
+
+    @on(Input.Submitted)
+    def _done(self, event: Input.Submitted) -> None:
+        value = event.value.strip()
+        if value:
+            self.dismiss(value)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+NEW_PLAYLIST = "__new__"
+
+
+class PlaylistPickerScreen(ModalScreen[str | None]):
+    """Choose a playlist (returns its id), or NEW_PLAYLIST to create one."""
+
+    BINDINGS = [Binding("escape", "cancel", show=False)]
+
+    def __init__(self, playlists: list[Playlist], what: str) -> None:
+        super().__init__()
+        self.playlists = playlists
+        self.what = what
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="dialog"):
+            yield Static(f"Add [bold]{self.what}[/] to…")
+            options = [Option(Text("+ New playlist…", style=f"bold {ACCENT}"), id=NEW_PLAYLIST)]
+            options += [
+                Option(Text.assemble(p.name, (f"  {p.track_count} tracks", "dim")), id=p.id)
+                for p in self.playlists
+            ]
+            yield OptionList(*options, id="picker")
+            yield Static("[dim]↑/↓ choose · Enter confirm · Esc cancel[/]")
+
+    def on_mount(self) -> None:
+        picker = self.query_one("#picker", OptionList)
+        picker.focus()
+        picker.highlighted = 1 if self.playlists else 0
+
+    @on(OptionList.OptionSelected)
+    def _chosen(self, event: OptionList.OptionSelected) -> None:
+        self.dismiss(event.option.id)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)

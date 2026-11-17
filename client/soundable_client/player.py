@@ -31,6 +31,7 @@ class PlayerState:
     volume: int = 70
     idle: bool = True
     error: str | None = None
+    context: str | None = None  # e.g. the playlist name the queue came from
 
     @property
     def current(self) -> Track | None:
@@ -127,9 +128,12 @@ class Player:
             self.state.queue = []
             await self.start()
 
-    async def play_list(self, tracks: list[Track], start: int = 0) -> None:
+    async def play_list(
+        self, tracks: list[Track], start: int = 0, context: str | None = None
+    ) -> None:
         """Replace the queue with `tracks` and start at `start`."""
         await self.ensure_running()
+        self.state.context = context
         await self.mpv.command("stop")  # also clears the playlist
         self.state.queue = []
         for t in tracks:
@@ -162,6 +166,7 @@ class Player:
             await self.mpv.command("stop")
         self.state.queue = []
         self.state.index = -1
+        self.state.context = None
         self._notify()
 
     async def toggle_pause(self) -> None:

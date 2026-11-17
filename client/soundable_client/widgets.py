@@ -74,7 +74,8 @@ class NowPlaying(Widget):
             return line
         t = s.current
         icon = "⏸" if s.paused else "▶"
-        right = Text(f"vol {s.volume}%  ·  {s.index + 1}/{len(s.queue)}", style="dim")
+        ctx = f"♫ {s.context}  ·  " if s.context else ""
+        right = Text(f"{ctx}vol {s.volume}%  ·  {s.index + 1}/{len(s.queue)}", style="dim")
         left = Text()
         left.append(f"{icon} ", style=f"bold {ACCENT}")
         left.append(t.title, style="bold")

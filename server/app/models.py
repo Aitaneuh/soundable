@@ -101,6 +101,9 @@ class Playlist(TimestampMixin, Base):
         cascade="all, delete-orphan",
     )
 
+    # Names are unique ignoring case so the client can address playlists by name.
+    __table_args__ = (Index("uq_playlists_name_lower", func.lower(text("name")), unique=True),)
+
 
 class PlaylistTrack(Base):
     """An ordered entry. The same track may appear several times in one playlist."""

@@ -100,6 +100,27 @@ class Job:
         return self.url or "?"
 
 
+@dataclass(frozen=True)
+class Playlist:
+    id: str
+    name: str
+    comment: str | None
+    track_count: int
+    duration: float
+    tracks: tuple[Track, ...] = ()  # only filled by Api.playlist()
+
+    @classmethod
+    def from_json(cls, d: dict[str, Any]) -> Playlist:
+        return cls(
+            id=d["id"],
+            name=d["name"],
+            comment=d.get("comment"),
+            track_count=int(d.get("track_count") or 0),
+            duration=float(d.get("duration_seconds") or 0),
+            tracks=tuple(Track.from_json(t) for t in d.get("tracks", [])),
+        )
+
+
 def _detail(resp: httpx.Response) -> tuple[str, Any]:
     try:
         data = resp.json()
@@ -204,6 +225,53 @@ class Api:
         """Absolute signed URL that mpv can open without headers."""
         data = (await self._request("GET", f"/api/tracks/{track_id}/stream-url")).json()
         return self.base_url + data["url"]
+
+    # --- playlists ------------------------------------------------------------------------
+
+    async def playlists(self) -> list[Playlist]:
+        resp = await self._request("GET", "/api/playlists")
+        return [Playlist.from_json(p) for p in resp.json()]
+
+    async def playlist(self, playlist_id: str) -> Playlist:
+        return Playlist.from_json(
+            (await self._request("GET", f"/api/playlists/{playlist_id}")).json()
+        )
+
+    async def create_playlist(self, name: str, track_ids: list[str] | None = None) -> Playlist:
+        resp = await self._request(
+            "POST", "/api/playlists", json={"name": name, "track_ids": track_ids or []}
+        )
+        return Playlist.from_json(resp.json())
+
+    async def rename_playlist(self, playlist_id: str, name: str) -> Playlist:
+        resp = await self._request("PATCH", f"/api/playlists/{playlist_id}", json={"name": name})
+        return Playlist.from_json(resp.json())
+
+    async def delete_playlist(self, playlist_id: str) -> None:
+        await self._request("DELETE", f"/api/playlists/{playlist_id}")
+
+    async def add_to_playlist(
+        self, playlist_id: str, track_ids: list[str], position: int | None = None
+    ) -> Playlist:
+        body: dict[str, Any] = {"track_ids": track_ids}
+        if position is not None:
+            body["position"] = position
+        resp = await self._request("POST", f"/api/playlists/{playlist_id}/tracks", json=body)
+        return Playlist.from_json(resp.json())
+
+    async def remove_from_playlist(self, playlist_id: str, positions: list[int]) -> Playlist:
+        resp = await self._request(
+            "DELETE", f"/api/playlists/{playlist_id}/tracks", params={"positions": positions}
+        )
+        return Playlist.from_json(resp.json())
+
+    async def move_in_playlist(self, playlist_id: str, src: int, dst: int) -> Playlist:
+        resp = await self._request(
+            "POST",
+            f"/api/playlists/{playlist_id}/move",
+            json={"from_position": src, "to_position": dst},
+        )
+        return Playlist.from_json(resp.json())
 
     # --- imports / jobs ------------------------------------------------------------------
 

@@ -14,7 +14,7 @@ from textual.containers import Vertical
 from textual.widget import Widget
 from textual.widgets import ContentSwitcher, DataTable, Input, Static
 
-from soundable_client.api import Track
+from soundable_client.api import Playlist, Track
 from soundable_client.commands import COMMAND_SPECS
 from soundable_client.formatting import ACCENT, fmt_time, fold, progress_bar, track_table
 from soundable_client.player import PlayerState
@@ -96,23 +96,39 @@ class ListenView(Widget, can_focus=True):
             upnext.update(Text("End of queue.", style="dim"))
 
 
+PANE_HINTS = {
+    "lib": "Enter play · a queue · p add to playlist · e edit · d delete · / filter · r refresh",
+    "pls": "Enter play · → open · n new · e rename · d delete",
+    "plt": "Enter play from here · ← back · p add to another playlist · d remove · "
+    "shift+↑/↓ move · e edit track",
+    "queue": "Enter jump to · p add to playlist · d remove · e edit track",
+}
+
+
 class BrowseView(Vertical):
-    """Navigate the library and the queue with the keyboard."""
+    """Navigate the library, playlists and the queue with the keyboard."""
 
     BINDINGS = [
-        Binding("tab", "switch_pane", "library/queue", priority=True),
+        Binding("tab", "switch_pane(1)", "next tab", priority=True),
+        Binding("shift+tab", "switch_pane(-1)", "previous tab", priority=True),
+        Binding("right,o", "open_playlist", "open", priority=True),
+        Binding("left,backspace", "close_playlist", "back", priority=True),
         Binding("a", "enqueue", "add to queue"),
-        Binding("e", "edit", "edit"),
+        Binding("p", "add_to_playlist", "add to playlist"),
+        Binding("n", "new_playlist", "new playlist"),
+        Binding("e", "edit", "edit/rename"),
         Binding("d,delete", "delete", "delete/remove"),
+        Binding("shift+up", "move(-1)", "move up"),
+        Binding("shift+down", "move(1)", "move down"),
         Binding("r", "refresh", "refresh"),
         Binding("slash", "filter", "filter"),
         Binding("space", "pause", "play/pause"),
-        Binding("escape", "back", "prompt"),
+        Binding("escape", "back", "back"),
     ]
 
     DEFAULT_CSS = """
     BrowseView { height: 1fr; }
-    BrowseView #browse-tabs { height: 1; padding: 0 1; }
+    BrowseView #browse-tabs { height: 2; padding: 0 1; }
     BrowseView #filter { display: none; margin: 0 1; }
     BrowseView #filter.visible { display: block; }
     BrowseView DataTable { height: 1fr; }
@@ -122,7 +138,10 @@ class BrowseView(Vertical):
         super().__init__(**kw)  # type: ignore[arg-type]
         self.library: list[Track] = []
         self.filtered: list[Track] = []
+        self.playlists: list[Playlist] = []
+        self.open: Playlist | None = None  # playlist shown in the "plt" pane
         self.pane = "lib"
+        self.playlists_loaded = False
         self._queue_sig: tuple[int, int] | None = None
 
     @property
@@ -134,29 +153,81 @@ class BrowseView(Vertical):
         yield Input(placeholder="filter (Enter to go to the list, Esc to clear)", id="filter")
         with ContentSwitcher(initial="lib"):
             yield DataTable(id="lib", cursor_type="row", zebra_stripes=True)
+            yield DataTable(id="pls", cursor_type="row", zebra_stripes=True)
+            yield DataTable(id="plt", cursor_type="row", zebra_stripes=True)
             yield DataTable(id="queue", cursor_type="row", zebra_stripes=True)
 
     def on_mount(self) -> None:
-        for tid in ("#lib", "#queue"):
+        for tid in ("#lib", "#plt", "#queue"):
             table = self.query_one(tid, DataTable)
             table.add_column("#", key="n", width=4)
             table.add_column("Title", key="title", width=40)
             table.add_column("Artist", key="artist", width=26)
             table.add_column("Album", key="album", width=22)
-            table.add_column("Time", key="time", width=6)
+            table.add_column("Time", key="time", width=7)
+        pls = self.query_one("#pls", DataTable)
+        pls.add_column("#", width=4)
+        pls.add_column("Playlist", width=40)
+        pls.add_column("Tracks", width=8)
+        pls.add_column("Duration", width=10)
         self._render_tabs()
 
+    # --- tabs -----------------------------------------------------------------------------
+
     def _render_tabs(self) -> None:
+        q = len(self.sapp.player_state().queue)
+        pl_label = f"Playlists ({len(self.playlists)})"
+        if self.open is not None:
+            pl_label = f"Playlists ▸ {self.open.name}"
+        tabs = (
+            ("lib", f"Library ({len(self.filtered)})"),
+            ("pl", pl_label),
+            ("queue", f"Queue ({q})"),
+        )
+        active = "pl" if self.pane in ("pls", "plt") else self.pane
         t = Text(" ")
-        for key, label in (("lib", f"Library ({len(self.filtered)})"), ("queue", "Queue")):
-            style = f"bold reverse {ACCENT}" if key == self.pane else "dim"
+        for key, label in tabs:
+            style = f"bold reverse {ACCENT}" if key == active else "dim"
             t.append(f" {label} ", style=style)
             t.append("  ")
-        t.append("Tab switch · Enter play · a queue · e edit · d delete · / filter", style="dim")
+        t.append("\n ")
+        t.append(PANE_HINTS[self.pane], style="dim")
         self.query_one("#browse-tabs", Static).update(t)
+
+    def _show(self, pane: str) -> None:
+        self.pane = pane
+        self.query_one(ContentSwitcher).current = pane
+        if pane == "queue":
+            self.refresh_queue(self.sapp.player_state(), force=True)
+        if pane == "pls" and not self.playlists_loaded:
+            self.sapp.load_playlists()
+        self._render_tabs()
+        self.focus_table()
 
     def focus_table(self) -> None:
         self.query_one(f"#{self.pane}", DataTable).focus()
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        # Priority bindings must not steal keys from the filter box.
+        if action in ("switch_pane", "open_playlist", "close_playlist"):
+            if self.query_one("#filter", Input).has_focus:
+                return action == "switch_pane"
+            if action == "open_playlist":
+                return self.pane == "pls"
+            if action == "close_playlist":
+                return self.pane == "plt"
+        return True
+
+    def action_switch_pane(self, step: int) -> None:
+        if self.query_one("#filter", Input).has_focus:
+            self.focus_table()
+            return
+        order = ["lib", "pl", "queue"]
+        cur = "pl" if self.pane in ("pls", "plt") else self.pane
+        nxt = order[(order.index(cur) + step) % len(order)]
+        if nxt == "pl":
+            nxt = "plt" if self.open is not None else "pls"
+        self._show(nxt)
 
     # --- data -------------------------------------------------------------------------
 
@@ -174,10 +245,35 @@ class BrowseView(Vertical):
             ]
         else:
             self.filtered = list(self.library)
-        table = self.query_one("#lib", DataTable)
+        _fill_tracks(self.query_one("#lib", DataTable), self.filtered)
+        self._render_tabs()
+
+    def set_playlists(self, playlists: list[Playlist]) -> None:
+        self.playlists = playlists
+        self.playlists_loaded = True
+        table = self.query_one("#pls", DataTable)
+        row = table.cursor_row
         table.clear()
-        for i, t in enumerate(self.filtered, 1):
-            table.add_row(str(i), t.title, t.artist, t.album or "", fmt_time(t.duration), key=t.id)
+        for i, p in enumerate(playlists, 1):
+            table.add_row(str(i), p.name, str(p.track_count), fmt_time(p.duration))
+        if playlists:
+            table.move_cursor(row=min(row, len(playlists) - 1))
+        if self.open is not None and all(p.id != self.open.id for p in playlists):
+            self.open = None
+            if self.pane == "plt":
+                self._show("pls")
+        self._render_tabs()
+
+    def show_playlist(self, playlist: Playlist, cursor: int | None = None) -> None:
+        """Open (or refresh) a playlist's track list."""
+        self.open = playlist
+        table = self.query_one("#plt", DataTable)
+        row = table.cursor_row if cursor is None else cursor
+        _fill_tracks(table, list(playlist.tracks))
+        if playlist.tracks:
+            table.move_cursor(row=max(0, min(row, len(playlist.tracks) - 1)))
+        if self.pane != "plt":
+            self._show("plt")
         self._render_tabs()
 
     def refresh_queue(self, s: PlayerState, force: bool = False) -> None:
@@ -187,19 +283,10 @@ class BrowseView(Vertical):
         self._queue_sig = sig
         table = self.query_one("#queue", DataTable)
         row = table.cursor_row
-        table.clear()
-        for i, t in enumerate(s.queue):
-            marker = "▶" if i == s.index else str(i + 1)
-            style = f"bold {ACCENT}" if i == s.index else ""
-            table.add_row(
-                Text(marker, style=style),
-                Text(t.title, style=style),
-                t.artist,
-                t.album or "",
-                fmt_time(t.duration),
-            )
+        _fill_tracks(table, s.queue, current=s.index)
         if s.queue:
             table.move_cursor(row=min(row, len(s.queue) - 1))
+        self._render_tabs()
 
     # --- actions ----------------------------------------------------------------------
 
@@ -207,16 +294,25 @@ class BrowseView(Vertical):
         table = self.query_one(f"#{self.pane}", DataTable)
         return table.cursor_row if table.row_count else None
 
-    def action_switch_pane(self) -> None:
-        if self.query_one("#filter", Input).has_focus:
-            self.focus_table()
-            return
-        self.pane = "queue" if self.pane == "lib" else "lib"
-        self.query_one(ContentSwitcher).current = self.pane
+    def _track_list(self) -> list[Track]:
+        if self.pane == "lib":
+            return self.filtered
+        if self.pane == "plt" and self.open is not None:
+            return list(self.open.tracks)
         if self.pane == "queue":
-            self.refresh_queue(self.sapp.player_state(), force=True)
-        self._render_tabs()
-        self.focus_table()
+            return self.sapp.player_state().queue
+        return []
+
+    def _selected_track(self) -> Track | None:
+        i = self._cursor()
+        tracks = self._track_list()
+        return tracks[i] if i is not None and i < len(tracks) else None
+
+    def _selected_playlist(self) -> Playlist | None:
+        i = self._cursor()
+        if self.pane == "pls" and i is not None and i < len(self.playlists):
+            return self.playlists[i]
+        return None
 
     @on(DataTable.RowSelected)
     def _row_selected(self, event: DataTable.RowSelected) -> None:
@@ -224,20 +320,39 @@ class BrowseView(Vertical):
         i = event.cursor_row
         if self.pane == "lib":
             self.sapp.play_tracks(self.filtered, i)
-        else:
+        elif self.pane == "queue":
             self.sapp.play_queue_index(i)
+        elif self.pane == "pls" and (p := self._selected_playlist()):
+            self.sapp.play_playlist(p)
+        elif self.pane == "plt" and self.open is not None:
+            self.sapp.play_tracks(list(self.open.tracks), i, context=self.open.name)
+
+    def action_open_playlist(self) -> None:
+        if p := self._selected_playlist():
+            self.sapp.open_playlist(p)
+
+    def action_close_playlist(self) -> None:
+        self.open = None
+        self._show("pls")
 
     def action_enqueue(self) -> None:
-        i = self._cursor()
-        if self.pane == "lib" and i is not None:
-            self.sapp.enqueue_tracks([self.filtered[i]])
+        if self.pane in ("lib", "plt") and (t := self._selected_track()):
+            self.sapp.enqueue_tracks([t])
+
+    def action_add_to_playlist(self) -> None:
+        if t := self._selected_track():
+            self.sapp.add_to_playlist_interactive([t], t.title)
+
+    def action_new_playlist(self) -> None:
+        if self.pane in ("pls", "plt"):
+            self.sapp.new_playlist_interactive([])
 
     def action_edit(self) -> None:
-        i = self._cursor()
-        if i is None:
-            return
-        track = self.filtered[i] if self.pane == "lib" else self.sapp.player_state().queue[i]
-        self.sapp.edit_track(track)
+        if self.pane == "pls":
+            if p := self._selected_playlist():
+                self.sapp.rename_playlist_interactive(p)
+        elif t := self._selected_track():
+            self.sapp.edit_track(t)
 
     def action_delete(self) -> None:
         i = self._cursor()
@@ -245,16 +360,30 @@ class BrowseView(Vertical):
             return
         if self.pane == "lib":
             self.sapp.delete_track(self.filtered[i])
-        else:
+        elif self.pane == "queue":
             self.sapp.remove_from_queue([i])
+        elif self.pane == "pls" and (p := self._selected_playlist()):
+            self.sapp.delete_playlist_interactive(p)
+        elif self.pane == "plt" and self.open is not None:
+            self.sapp.remove_from_playlist(self.open, [i])
+
+    def action_move(self, step: int) -> None:
+        i = self._cursor()
+        if self.pane == "plt" and self.open is not None and i is not None:
+            j = i + step
+            if 0 <= j < len(self.open.tracks):
+                self.sapp.move_in_playlist(self.open, i, j)
 
     def action_refresh(self) -> None:
         self.sapp.load_library()
+        self.sapp.load_playlists()
 
     def action_pause(self) -> None:
         self.sapp.player_action("pause")
 
     def action_filter(self) -> None:
+        if self.pane != "lib":
+            self._show("lib")
         f = self.query_one("#filter", Input)
         f.add_class("visible")
         f.focus()
@@ -265,6 +394,8 @@ class BrowseView(Vertical):
             f.value = ""
             f.remove_class("visible")
             self.focus_table()
+        elif self.pane == "plt":
+            self.action_close_playlist()
         else:
             self.sapp.set_mode("prompt")
 
@@ -275,9 +406,21 @@ class BrowseView(Vertical):
     @on(Input.Submitted, "#filter")
     def _filter_submitted(self, event: Input.Submitted) -> None:
         event.stop()
-        if self.pane != "lib":
-            self.action_switch_pane()
         self.focus_table()
+
+
+def _fill_tracks(table: DataTable, tracks: list[Track], current: int | None = None) -> None:
+    table.clear()
+    for i, t in enumerate(tracks):
+        is_cur = current is not None and i == current
+        style = f"bold {ACCENT}" if is_cur else ""
+        table.add_row(
+            Text("▶" if is_cur else str(i + 1), style=style),
+            Text(t.title, style=style),
+            t.artist,
+            t.album or "",
+            fmt_time(t.duration),
+        )
 
 
 def help_text() -> Group:
