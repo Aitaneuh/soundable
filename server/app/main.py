@@ -8,7 +8,8 @@ from fastapi import FastAPI
 
 from app.config import get_settings
 from app.db import get_engine
-from app.routers import auth, health
+from app.library import cleanup_stale_tmp
+from app.routers import auth, health, tracks
 from app.security import init_password_hash
 
 
@@ -24,6 +25,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     configure_logging()
     settings = get_settings()
     settings.music_dir.mkdir(parents=True, exist_ok=True)
+    cleanup_stale_tmp()
     init_password_hash()
     yield
     await get_engine().dispose()
@@ -33,6 +35,7 @@ def create_app() -> FastAPI:
     app = FastAPI(title="soundable", version="0.1.0", lifespan=lifespan)
     app.include_router(health.router)
     app.include_router(auth.router)
+    app.include_router(tracks.router)
     return app
 
 

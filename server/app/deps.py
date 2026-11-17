@@ -16,7 +16,7 @@ from app.security import hash_token
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 
-_bearer = HTTPBearer(auto_error=False)
+bearer_scheme = HTTPBearer(auto_error=False)
 
 
 def client_ip(request: Request) -> str:
@@ -30,7 +30,7 @@ def client_ip(request: Request) -> str:
 
 async def require_token(
     session: SessionDep,
-    creds: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
+    creds: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> ApiToken:
     if creds is None or creds.scheme.lower() != "bearer":
         raise HTTPException(
