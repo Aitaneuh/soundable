@@ -14,6 +14,9 @@ case "$1" in
   worker)
     exec python -m app.worker
     ;;
+  backup)
+    exec python -m app.backup loop
+    ;;
   *)
     exec "$@"
     ;;

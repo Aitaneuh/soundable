@@ -31,6 +31,39 @@ If Cloudflare's *Bot Fight Mode* / WAF is on, it may challenge the iPhone app's 
 To update: push to `main`, then in Portainer *Pull and redeploy*. The app image is always
 rebuilt from the repo (`pull_policy: build`), so the "re-pull image" toggle only affects Postgres.
 
+## Backups
+
+The `backup` service backs up automatically every `BACKUP_INTERVAL_HOURS` (default 24 h,
+first run a minute after start) into `BACKUP_DIR`:
+
+- `db/soundable-<date>.sql.gz`: full database dump (tracks, playlists, jobs…); the
+  newest `BACKUP_KEEP` (default 14) are kept
+- `music/`: mirror of the audio files; incremental (only new files are copied)
+- `last-backup.json`: result of the last run (check it, or the `backup` container logs)
+
+**Put `BACKUP_DIR` on another disk** (e.g. `BACKUP_DIR=/mnt/backup/soundable`, writable by
+uid 1000): a backup on the same disk as Docker doesn't survive that disk dying. For an
+off-site copy, sync that folder anywhere (rclone, Syncthing, a NAS job…).
+
+Manual commands (Portainer → Containers → `soundable-backup-1` → Console, or
+`docker exec -it soundable-backup-1 …`):
+
+```sh
+python -m app.backup run       # back up now
+python -m app.backup list      # available dumps
+```
+
+### Restore
+
+1. Stop the `api` and `worker` containers (restore refuses to run while they're connected).
+2. In the `backup` container: `python -m app.backup restore latest`
+   (or a specific file name from `list`). The database is replaced by the dump, and any
+   music file missing from the music volume is copied back from the mirror.
+3. Start `api` and `worker` again.
+
+Restoring onto a brand-new server works the same way: deploy the stack with `BACKUP_DIR`
+pointing at the backup folder, stop `api`/`worker`, restore, start them.
+
 ## Run the server locally
 
 ```sh

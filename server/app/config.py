@@ -42,6 +42,11 @@ class Settings(BaseSettings):
 
     ytdlp_cookies_file: Path | None = None
 
+    # Backups (the `backup` service): see app/backup.py
+    backup_dir: Path = Path("/backups")
+    backup_interval_hours: int = 24
+    backup_keep: int = 14
+
     log_level: str = "INFO"
 
     @field_validator("ytdlp_cookies_file", mode="before")

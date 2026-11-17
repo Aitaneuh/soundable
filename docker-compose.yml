@@ -21,6 +21,8 @@ x-app: &app
     SUBSONIC_PASSWORD: ${SUBSONIC_PASSWORD:?set SUBSONIC_PASSWORD}
     MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-95}
     YTDLP_COOKIES_FILE: ${YTDLP_COOKIES_FILE:-}
+    BACKUP_INTERVAL_HOURS: ${BACKUP_INTERVAL_HOURS:-24}
+    BACKUP_KEEP: ${BACKUP_KEEP:-14}
     LOG_LEVEL: ${LOG_LEVEL:-INFO}
   volumes:
     - music:/data/music
@@ -68,6 +70,19 @@ services:
     # Give an in-flight download a chance to finish; a killed job is re-queued later.
     stop_grace_period: 30s
 
+  backup:
+    <<: *app
+    command: ["backup"]
+    networks: [internal]
+    healthcheck:
+      disable: true
+    volumes:
+      - music:/data/music
+      # A named volume by default; set BACKUP_DIR to a host path (another disk, a NAS
+      # mount...) so backups survive the loss of the Docker data disk. The directory
+      # must be writable by uid 1000.
+      - ${BACKUP_DIR:-backups}:/backups
+
 networks:
   internal: {}
   # The network your cloudflared container is attached to. cloudflared then reaches
@@ -79,3 +94,4 @@ networks:
 volumes:
   pgdata: {}
   music: {}
+  backups: {}

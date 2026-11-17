@@ -15,14 +15,14 @@ FROM python:3.12-slim-trixie AS runtime
 # package, which drags in ~500 MB of X11/codec libraries we don't need.
 # deno: JavaScript runtime that yt-dlp needs to solve YouTube's player challenges.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends tini ca-certificates \
+    && apt-get install -y --no-install-recommends tini ca-certificates postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=mwader/static-ffmpeg:9.0.2-1 /ffmpeg /ffprobe /usr/local/bin/
 COPY --from=denoland/deno:bin-2.9.8 /deno /usr/local/bin/deno
 
 RUN useradd --create-home --uid 1000 app \
-    && mkdir -p /data/music \
-    && chown -R app:app /data
+    && mkdir -p /data/music /backups \
+    && chown -R app:app /data /backups
 
 WORKDIR /app
 COPY --from=build /app/.venv /app/.venv
