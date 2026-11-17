@@ -6,6 +6,9 @@ x-app: &app
   build:
     context: ./server
   image: soundable-server:latest
+  # Built from this repo, never pulled from a registry. Also makes every (re)deploy
+  # rebuild from the current code, so "Pull and redeploy" picks up updates.
+  pull_policy: build
   restart: unless-stopped
   environment:
     POSTGRES_HOST: db
