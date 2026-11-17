@@ -1,0 +1,11 @@
+# Local development only: `docker compose up` merges this file automatically.
+# Portainer only uses docker-compose.yml, so none of this reaches production.
+services:
+  api:
+    ports:
+      - "127.0.0.1:8000:8000"
+
+networks:
+  proxy:
+    external: false
+    name: soundable_local_proxy
