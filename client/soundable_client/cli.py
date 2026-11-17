@@ -7,7 +7,7 @@ import asyncio
 import sys
 
 from soundable_client import __version__
-from soundable_client.config import Config, config_dir, delete_token, load_token
+from soundable_client.config import Config, config_dir, delete_token, load_token, log_file
 
 
 def _logout(config: Config) -> int:
@@ -41,6 +41,7 @@ def _doctor(config: Config) -> int:
 
     print(f"soundable {__version__}")
     print(f"config dir : {config_dir()}")
+    print(f"log file   : {log_file()}")
     print(f"server     : {config.server_url or '(not configured)'}")
     has_token = bool(config.server_url and load_token(config.server_url))
     print(f"token      : {'present' if has_token else 'missing'}")
@@ -65,6 +66,9 @@ def main(argv: list[str] | None = None) -> int:
         return _doctor(config)
 
     from soundable_client.app import SoundableApp
+    from soundable_client.config import setup_logging
+
+    setup_logging()
 
     SoundableApp(config, force_login=args.cmd == "login").run()
     return 0

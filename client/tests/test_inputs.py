@@ -67,3 +67,16 @@ def test_server_url_validation() -> None:
 def test_mpv_option_escape() -> None:
     assert escape_option_value("a,b") == "%3%a,b"
     assert escape_option_value("é") == "%2%é"
+
+
+def test_html_error_pages_are_explained() -> None:
+    import httpx
+
+    from soundable_client.api import _detail
+
+    msg, _ = _detail(httpx.Response(403, headers={"content-type": "text/html"}, text="<html>x"))
+    assert "web page" in msg and "403" in msg
+    msg, data = _detail(
+        httpx.Response(409, json={"detail": "Already there", "existing_track_id": "1"})
+    )
+    assert msg == "Already there" and data["existing_track_id"] == "1"

@@ -112,6 +112,11 @@ class Mpv:
             "--title=soundable",
             "--keep-open=no",
             "--gapless-audio=weak",
+            # Survive a server restart / Wi-Fi blip mid-track: ffmpeg reconnects and
+            # resumes with a Range request.
+            "--stream-lavf-o=reconnect=1,reconnect_streamed=1,reconnect_on_network_error=1,"
+            "reconnect_delay_max=10",
+            "--network-timeout=30",
         ]
         if IS_WINDOWS:
             # Lets Windows media keys / the volume overlay control playback (mpv >= 0.40).

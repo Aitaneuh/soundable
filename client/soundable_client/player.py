@@ -60,6 +60,8 @@ class Player:
         self._listened = 0.0  # seconds actually heard of the current track
         self._reported = False
         self._error_listeners: list[Callable[[str], None]] = []
+        self._crash_listeners: list[Callable[[], None]] = []
+        self._crash_snapshot: tuple[list[Track], list[Track], int, float, str | None] | None = None
         mpv.on_event(self._on_event)
 
     def on_change(self, cb: Callable[[PlayerState], None]) -> None:
@@ -86,6 +88,21 @@ class Player:
             self._reported = True
             for cb in self._played_listeners:
                 cb(cur)
+
+    def on_crash(self, cb: Callable[[], None]) -> None:
+        """mpv died unexpectedly; call recover() to restart it with the same queue."""
+        self._crash_listeners.append(cb)
+
+    async def recover(self) -> bool:
+        """Restart mpv and bring back the queue (paused) as it was when mpv died."""
+        snap, self._crash_snapshot = self._crash_snapshot, None
+        await self.start()
+        await self._apply_repeat()
+        await self._apply_audio_settings()
+        if snap and snap[0]:
+            await self.restore(*snap)
+            return True
+        return False
 
     def on_error(self, cb: Callable[[str], None]) -> None:
         self._error_listeners.append(cb)
@@ -150,13 +167,22 @@ class Player:
             for cb in self._error_listeners:
                 cb(msg)
         elif name == "ipc-closed":
+            if not self.mpv.closing:
+                index = s.index if s.index >= 0 else 0
+                self._crash_snapshot = (
+                    list(s.queue),
+                    list(self._original),
+                    index,
+                    s.position,
+                    s.context,
+                )
             s.idle = True
             s.index = -1
             self._notify()
             if self.mpv.closing:
                 return
-            for cb in self._error_listeners:
-                cb("mpv stopped unexpectedly; it will be restarted on the next play")
+            for cb in self._crash_listeners:
+                cb()
 
     # --- controls -------------------------------------------------------------------------
 

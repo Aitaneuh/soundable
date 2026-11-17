@@ -70,7 +70,7 @@ class LoginScreen(ModalScreen[LoginResult | None]):
         if self.can_cancel:
             self.dismiss(None)
 
-    @work(exclusive=True)
+    @work(exit_on_error=False, exclusive=True)
     async def attempt_login(self) -> None:
         raw_url = self.query_one("#url", Input).value
         password = self.query_one("#password", Input).value

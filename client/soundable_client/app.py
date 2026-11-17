@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import random
 import re
 from collections.abc import Awaitable, Callable
@@ -17,6 +18,7 @@ from textual import on, work
 from textual.app import App, ComposeResult
 from textual.screen import ModalScreen
 from textual.widgets import ContentSwitcher, Input, RichLog, Static
+from textual.worker import Worker, WorkerState
 
 from soundable_client import __version__, keys
 from soundable_client.api import Api, ApiError, AuthError, Job, NetworkError, Playlist, Track
@@ -26,6 +28,7 @@ from soundable_client.config import (
     SessionState,
     delete_token,
     load_token,
+    log_file,
     save_token,
 )
 from soundable_client.formatting import (
@@ -53,6 +56,8 @@ from soundable_client.screens import (
 )
 from soundable_client.views import BrowseView, ListenView, help_text
 from soundable_client.widgets import CommandMenu, NowPlaying, PromptInput, StatusHeader, TaskList
+
+log = logging.getLogger(__name__)
 
 MODE_VIEWS = {"prompt": "log", "listen": "listen", "browse": "browse"}
 
@@ -100,6 +105,8 @@ class SoundableApp(App[None]):
         self._login_open = False
         self._tracked_jobs: set[str] = set()
         self._restored = False
+        self.max_upload_mb: int | None = None
+        self._recoveries: list[float] = []
         self._started_mode = False
         self.last_playlists: list[Playlist] = []
         self.last_playlist: Playlist | None = None
@@ -183,6 +190,21 @@ class SoundableApp(App[None]):
         keys.set_overrides(self.config.keymap)
         self.set_keymap(dict(self.config.keymap))
 
+    def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
+        """A background task crashed: report it instead of closing the app."""
+        if event.state != WorkerState.ERROR:
+            return
+        err = event.worker.error
+        if isinstance(err, ApiError):
+            self._api_error(err)
+            return
+        log.error("background task %r failed", event.worker.name, exc_info=err)
+        self.say(
+            f"Something went wrong ({type(err).__name__}: {err}). The app keeps running; "
+            f"details are in {log_file()}.",
+            "error",
+        )
+
     def on_mount(self) -> None:
         self._apply_appearance()
         self._apply_keymap()
@@ -197,7 +219,7 @@ class SoundableApp(App[None]):
         self.set_interval(15, self._health_tick)
         self.startup()
 
-    @work(exclusive=True, group="startup")
+    @work(exit_on_error=False, exclusive=True, group="startup")
     async def startup(self) -> None:
         await self._start_player()
         token = load_token(self.config.server_url) if self.config.server_url else None
@@ -215,7 +237,10 @@ class SoundableApp(App[None]):
             return
         # The player is (re)bound to the server once we're logged in.
         self.player = Player(Mpv(self.mpv_path, volume=self.config.volume), "", None)
-        self.player.on_error(lambda msg: self.say(f"Playback: {msg}", "error"))
+        self.player.on_error(
+            lambda msg: self.run_worker(self._playback_error(msg), exit_on_error=False)
+        )
+        self.player.on_crash(lambda: self.run_worker(self._recover_player(), exit_on_error=False))
         self.player.on_played(lambda t: self.run_worker(self._report_play(t), exit_on_error=False))
         self.player.state.shuffle = self.config.shuffle
         self.player.normalize = self.config.normalize
@@ -250,6 +275,8 @@ class SoundableApp(App[None]):
             return
         self.online = True
         self.header.status = "online"
+        with contextlib.suppress(ApiError, KeyError, ValueError):
+            self.max_upload_mb = int((await self.api.info())["max_upload_mb"])
         _, total = await self.api.tracks(limit=1)
         self.say(f"Connected to {url} as '{me['name']}' · {total} tracks in the library.", "ok")
         for job in await self.api.jobs(status=["queued", "running"], limit=50):
@@ -311,7 +338,7 @@ class SoundableApp(App[None]):
             where = save_token(result.server_url, result.token)
             stored = "the system keyring" if where == "keyring" else where
             self.say(f"Logged in. Token stored in {stored}.", "ok")
-            self.run_worker(self._connect(result.server_url, result.token))
+            self.run_worker(self._connect(result.server_url, result.token), exit_on_error=False)
 
         self.push_screen(LoginScreen(self.config.server_url, can_cancel=can_cancel), done)
 
@@ -419,7 +446,7 @@ class SoundableApp(App[None]):
             "shuffle": self._toggle_shuffle,
             "repeat": self._cycle_repeat,
         }
-        self.run_worker(actions[what](), group="player")
+        self.run_worker(actions[what](), group="player", exit_on_error=False)
 
     def action_player_action(self, what: str) -> None:
         if not isinstance(self.screen, ModalScreen):
@@ -446,9 +473,9 @@ class SoundableApp(App[None]):
             self._apply_appearance()
             self.refresh()
         elif name == "normalize" and self.player:
-            self.run_worker(self.player.set_normalize(bool(value)))
+            self.run_worker(self.player.set_normalize(bool(value)), exit_on_error=False)
         elif name == "audio_device" and self.player:
-            self.run_worker(self.player.set_audio_device(str(value)))
+            self.run_worker(self.player.set_audio_device(str(value)), exit_on_error=False)
         elif name == "library_sort":
             self.query_one(BrowseView).library = []  # reload with the new order on next visit
 
@@ -493,7 +520,7 @@ class SoundableApp(App[None]):
         self.notify(msg, timeout=2)
         self.say(msg)
 
-    @work(group="player")
+    @work(exit_on_error=False, group="player")
     async def play_tracks(
         self, tracks: list[Track], start: int = 0, context: str | None = None
     ) -> None:
@@ -503,13 +530,13 @@ class SoundableApp(App[None]):
             t = tracks[start]
             self.say(Text.assemble(("Playing ", ""), (t.title, "bold"), " — ", (t.artist, "cyan")))
 
-    @work(group="player")
+    @work(exit_on_error=False, group="player")
     async def play_queue_index(self, i: int) -> None:
         p = self._need_player()
         if p:
             await p.play_index(i)
 
-    @work(group="player")
+    @work(exit_on_error=False, group="player")
     async def enqueue_tracks(self, tracks: list[Track]) -> None:
         p = self._need_player()
         if p and tracks:
@@ -518,7 +545,7 @@ class SoundableApp(App[None]):
             self.notify(f"Added {what} to the queue")
             self.say(f"Added {what} to the queue ({len(p.state.queue)} queued).", "ok")
 
-    @work(group="player")
+    @work(exit_on_error=False, group="player")
     async def remove_from_queue(self, indexes: list[int]) -> None:
         p = self._need_player()
         if not p:
@@ -530,7 +557,7 @@ class SoundableApp(App[None]):
 
     # --- library actions (shared by commands and browse mode) -------------------------
 
-    @work(exclusive=True, group="library")
+    @work(exit_on_error=False, exclusive=True, group="library")
     async def load_library(self) -> None:
         if not await self._ensure_api():
             return
@@ -556,7 +583,9 @@ class SoundableApp(App[None]):
             self._replace_track(updated)
             self.say(f"Updated: {updated.title} — {updated.artist}", "ok")
 
-        self.push_screen(EditTrackScreen(track), lambda c: self.run_worker(apply(c)))
+        self.push_screen(
+            EditTrackScreen(track), lambda c: self.run_worker(apply(c)), exit_on_error=False
+        )
 
     def delete_track(self, track: Track) -> None:
         async def apply(yes: bool | None) -> None:
@@ -574,7 +603,9 @@ class SoundableApp(App[None]):
 
         q = Text.assemble("Delete ", (track.title, "bold"), " — ", track.artist, "?")
         q.append("\nThe file is removed from the server permanently.", style="dim")
-        self.push_screen(ConfirmScreen(q), lambda yes: self.run_worker(apply(yes)))
+        self.push_screen(
+            ConfirmScreen(q), lambda yes: self.run_worker(apply(yes)), exit_on_error=False
+        )
 
     def _replace_track(self, updated: Track) -> None:
         def sub(lst: list[Track]) -> list[Track]:
@@ -591,7 +622,7 @@ class SoundableApp(App[None]):
     def _browse(self) -> BrowseView:
         return self.query_one(BrowseView)
 
-    @work(exclusive=True, group="playlists")
+    @work(exit_on_error=False, exclusive=True, group="playlists")
     async def load_playlists(self) -> None:
         if not self.api or not self.api.token:
             return
@@ -609,7 +640,7 @@ class SoundableApp(App[None]):
             with contextlib.suppress(ApiError):
                 browse.set_playlists(await self.api.playlists())
 
-    @work(group="playlists")
+    @work(exit_on_error=False, group="playlists")
     async def open_playlist(self, playlist: Playlist) -> None:
         if not self.api:
             return
@@ -618,7 +649,7 @@ class SoundableApp(App[None]):
         except ApiError as e:
             self._api_error(e)
 
-    @work(group="player")
+    @work(exit_on_error=False, group="player")
     async def play_playlist(self, playlist: Playlist, shuffle: bool = False) -> None:
         if not self.api or not (p := self._need_player()):
             return
@@ -666,10 +697,11 @@ class SoundableApp(App[None]):
                 await self._add_tracks(target, tracks)
 
             self.push_screen(
-                PlaylistPickerScreen(playlists, what), lambda c: self.run_worker(chosen(c))
+                PlaylistPickerScreen(playlists, what),
+                lambda c: self.run_worker(chosen(c), exit_on_error=False),
             )
 
-        self.run_worker(run(), group="playlists")
+        self.run_worker(run(), group="playlists", exit_on_error=False)
 
     async def _add_tracks(self, playlist: Playlist, tracks: list[Track]) -> None:
         assert self.api
@@ -690,7 +722,8 @@ class SoundableApp(App[None]):
                 await self._create_playlist(name, tracks)
 
         self.push_screen(
-            NameScreen("New playlist", placeholder="name"), lambda n: self.run_worker(created(n))
+            NameScreen("New playlist", placeholder="name"),
+            lambda n: self.run_worker(created(n), exit_on_error=False),
         )
 
     async def _create_playlist(self, name: str, tracks: list[Track]) -> Playlist | None:
@@ -716,7 +749,7 @@ class SoundableApp(App[None]):
 
         self.push_screen(
             NameScreen("Rename playlist", initial=playlist.name),
-            lambda n: self.run_worker(renamed(n)),
+            lambda n: self.run_worker(renamed(n), exit_on_error=False),
         )
 
     async def _rename_playlist(self, playlist: Playlist, name: str) -> None:
@@ -746,9 +779,11 @@ class SoundableApp(App[None]):
 
         q = Text.assemble("Delete playlist ", (playlist.name, "bold"), "?")
         q.append("\nThe tracks themselves stay in your library.", style="dim")
-        self.push_screen(ConfirmScreen(q), lambda yes: self.run_worker(apply(yes)))
+        self.push_screen(
+            ConfirmScreen(q), lambda yes: self.run_worker(apply(yes)), exit_on_error=False
+        )
 
-    @work(group="playlists")
+    @work(exit_on_error=False, group="playlists")
     async def remove_from_playlist(self, playlist: Playlist, positions: list[int]) -> None:
         if not self.api:
             return
@@ -761,7 +796,7 @@ class SoundableApp(App[None]):
         self.say(f"Removed {n} track{'s' * (n != 1)} from '{p.name}'.")
         await self._after_playlist_change(p)
 
-    @work(group="playlists")
+    @work(exit_on_error=False, group="playlists")
     async def move_in_playlist(self, playlist: Playlist, src: int, dst: int) -> None:
         if not self.api:
             return
@@ -989,7 +1024,7 @@ class SoundableApp(App[None]):
             return
         self.prompt.remember(line)
         self.echo(line)
-        self.run_worker(self._handle(line), group="cmd")
+        self.run_worker(self._handle(line), group="cmd", exit_on_error=False)
 
     async def _handle(self, line: str) -> None:
         try:
@@ -1006,6 +1041,12 @@ class SoundableApp(App[None]):
             self._api_error(e)
         except MpvError as e:
             self.say(f"Player error: {e}", "error")
+        except Exception as e:
+            log.exception("command failed: %s", line)
+            self.say(
+                f"Something went wrong ({type(e).__name__}: {e}). Details in {log_file()}.",
+                "error",
+            )
 
     def _api_error(self, e: ApiError) -> None:
         if isinstance(e, AuthError):
@@ -1098,6 +1139,43 @@ class SoundableApp(App[None]):
         more = f" (showing {len(tracks)})" if total > len(tracks) else ""
         self.show_tracks(tracks, f"{total} result{'s' * (total != 1)} for '{args}'{more}")
         self.say(Text("/play <n> to play from #n · /queue add <n> to queue it", style="dim"))
+
+    async def _recover_player(self) -> None:
+        import time
+
+        now = time.monotonic()
+        self._recoveries = [t for t in self._recoveries if now - t < 120] + [now]
+        if not self.player:
+            return
+        if len(self._recoveries) > 3:
+            self.say(
+                "mpv keeps crashing; not restarting it again. Check `soundable doctor`, "
+                "then /play to try again.",
+                "error",
+            )
+            return
+        self.say("mpv stopped unexpectedly; restarting it…", "warn")
+        try:
+            restored = await self.player.recover()
+        except (MpvError, OSError) as e:
+            self.say(f"Couldn't restart mpv ({e}). /play will try again.", "error")
+            return
+        self.say("Player restarted" + ("; your queue is back (paused)." if restored else "."), "ok")
+
+    async def _playback_error(self, msg: str) -> None:
+        """mpv couldn't open a stream: find out why (expired login, server down...)."""
+        if self.api:
+            try:
+                await self.api.me()
+            except AuthError as e:
+                self._api_error(e)
+                return
+            except NetworkError:
+                self.say("Playback stopped: the server can't be reached right now.", "error")
+                return
+            except ApiError:
+                pass
+        self.say(f"Playback: {msg}", "error")
 
     async def _report_play(self, track: Track) -> None:
         if self.api and self.api.token:
@@ -1593,6 +1671,13 @@ class SoundableApp(App[None]):
         for n, f in enumerate(files, 1):
             prefix = f"[{n}/{len(files)}] " if len(files) > 1 else ""
             size = f.stat().st_size
+            if self.max_upload_mb and size > self.max_upload_mb * 2**20:
+                self.say(
+                    f"{f.name}: too large ({fmt_size(size)}, the server accepts up to "
+                    f"{self.max_upload_mb} MB).",
+                    "warn",
+                )
+                continue
             tid = self.tasks.add(f"{prefix}Uploading {f.name} ({fmt_size(size)})")
 
             def progress(sent: int, total: int, tid: int = tid) -> None:

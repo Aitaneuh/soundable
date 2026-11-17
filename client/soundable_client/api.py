@@ -156,6 +156,13 @@ class Playlist:
 
 
 def _detail(resp: httpx.Response) -> tuple[str, Any]:
+    if "text/html" in resp.headers.get("content-type", ""):
+        return (
+            f"the server answered with a web page instead of the soundable API "
+            f"(HTTP {resp.status_code}). If it's behind Cloudflare, an error or challenge "
+            "page may be in the way",
+            None,
+        )
     try:
         data = resp.json()
     except ValueError:
@@ -222,6 +229,9 @@ class Api:
     async def logout(self) -> None:
         await self._request("POST", "/api/auth/logout")
         self.token = None
+
+    async def info(self) -> dict[str, Any]:
+        return (await self._request("GET", "/api/info")).json()
 
     async def me(self) -> dict[str, Any]:
         return (await self._request("GET", "/api/auth/me")).json()

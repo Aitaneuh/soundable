@@ -198,7 +198,7 @@ class SettingsScreen(Screen[None]):
             table.add_row(a.label, key, SCOPE_LABEL[a.scope], key=a.id)
         table.move_cursor(row=row)
 
-    @work
+    @work(exit_on_error=False)
     async def _load_devices(self) -> None:
         player = self.sapp.player
         if player is None:

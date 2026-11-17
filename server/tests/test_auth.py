@@ -56,3 +56,9 @@ def test_stream_signature() -> None:
     assert not verify_stream_signature("abd", exp, sig)
     assert not verify_stream_signature("abc", exp + 1, sig)
     assert not verify_stream_signature("abc", int(time.time()) - 1, sig)
+
+
+async def test_info(client, auth) -> None:
+    r = await client.get("/api/info", headers=auth)
+    assert r.status_code == 200 and r.json()["max_upload_mb"] > 0
+    assert (await client.get("/api/info")).status_code == 401

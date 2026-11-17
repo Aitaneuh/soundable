@@ -36,6 +36,22 @@ def state_dir() -> Path:
     return d
 
 
+def log_file() -> Path:
+    return state_dir() / "client.log"
+
+
+def setup_logging() -> None:
+    """Log to a small rotating file (the terminal belongs to the UI)."""
+    from logging.handlers import RotatingFileHandler
+
+    handler = RotatingFileHandler(log_file(), maxBytes=1_000_000, backupCount=2, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    root = logging.getLogger()
+    root.addHandler(handler)
+    root.setLevel(logging.INFO)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+
+
 CONFIG_FILE = "config.json"
 TOKEN_FILE = "token"
 
