@@ -34,6 +34,8 @@ class ListenView(Widget, can_focus=True):
         Binding("space", "player('pause')", "play/pause"),
         Binding("shift+left,comma", "player('back')", "-10s"),
         Binding("shift+right,full_stop", "player('fwd')", "+10s"),
+        Binding("s", "player('shuffle')", "shuffle"),
+        Binding("r", "player('repeat')", "repeat"),
         Binding("escape", "app.set_mode('prompt')", "prompt"),
     ]
 
@@ -56,7 +58,7 @@ class ListenView(Widget, can_focus=True):
 
     def on_key(self, event: events.Key) -> None:
         # Start typing anywhere -> back to the prompt with that character.
-        if event.is_printable and event.character and event.character not in " ,.":
+        if event.is_printable and event.character and event.character not in " ,.sr":
             event.stop()
             self.sapp.set_mode("prompt", initial_text=event.character)
 
@@ -87,6 +89,11 @@ class ListenView(Widget, can_focus=True):
         lines.append("vol ", style="dim")
         lines.append_text(progress_bar(s.volume / 100, 20, color="cyan"))
         lines.append(f" {s.volume}%", style="dim")
+        lines.append("\n\n")
+        lines.append("⇄ shuffle", style=f"bold {ACCENT}" if s.shuffle else "grey35")
+        lines.append("    ")
+        rep = {"off": "↻ repeat off", "all": "↻ repeat all", "one": "↻ repeat one"}[s.repeat]
+        lines.append(rep, style=f"bold {ACCENT}" if s.repeat != "off" else "grey35")
         big.update(lines)
 
         rest = s.queue[s.index + 1 :]
@@ -447,6 +454,7 @@ def help_text() -> Group:
     section("Modes:")
     row("Esc", "prompt <-> listening (←/→ track, ↑/↓ volume, space pause, ,/. seek)")
     row("Ctrl+B", "browse (library & queue, Enter play, / filter, space pause)")
+    row("Ctrl+S / Ctrl+R", "shuffle on/off · repeat off -> all -> one (any mode)")
     row("Media keys", "play/pause/next/prev work system-wide (via mpv)")
     row("Ctrl+Q", "quit")
     return Group(*out)

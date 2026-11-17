@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import random
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -18,6 +19,7 @@ from soundable_client.mpv import Mpv, MpvError, escape_option_value
 
 log = logging.getLogger(__name__)
 
+REPEAT_MODES = ("off", "all", "one")
 OBSERVED = ("time-pos", "duration", "pause", "volume", "playlist-pos", "idle-active")
 
 
@@ -32,6 +34,8 @@ class PlayerState:
     idle: bool = True
     error: str | None = None
     context: str | None = None  # e.g. the playlist name the queue came from
+    shuffle: bool = False
+    repeat: str = "off"  # off | all | one
 
     @property
     def current(self) -> Track | None:
@@ -46,6 +50,7 @@ class Player:
         self.base_url = base_url.rstrip("/")
         self.token = token
         self.state = PlayerState(volume=mpv.initial_volume)
+        self._original: list[Track] = []  # queue order before shuffling
         self._listeners: list[Callable[[PlayerState], None]] = []
         self._error_listeners: list[Callable[[str], None]] = []
         mpv.on_event(self._on_event)
@@ -126,19 +131,32 @@ class Player:
     async def ensure_running(self) -> None:
         if not self.mpv.running:
             self.state.queue = []
+            self._original = []
             await self.start()
+            await self._apply_repeat()
 
-    async def play_list(
-        self, tracks: list[Track], start: int = 0, context: str | None = None
-    ) -> None:
-        """Replace the queue with `tracks` and start at `start`."""
-        await self.ensure_running()
-        self.state.context = context
+    async def _load(self, tracks: list[Track]) -> None:
+        """Replace mpv's playlist with `tracks` without starting playback."""
         await self.mpv.command("stop")  # also clears the playlist
         self.state.queue = []
         for t in tracks:
             await self._append(t)
             self.state.queue.append(t)
+
+    async def play_list(
+        self, tracks: list[Track], start: int = 0, context: str | None = None
+    ) -> None:
+        """Replace the queue with `tracks` and start at `start`. In shuffle mode the
+        chosen track plays first and the rest follow in random order."""
+        await self.ensure_running()
+        self.state.context = context
+        self._original = list(tracks)
+        order = list(tracks)
+        if self.state.shuffle and len(tracks) > 1:
+            rest = tracks[:start] + tracks[start + 1 :]
+            random.shuffle(rest)
+            order, start = [tracks[start], *rest], 0
+        await self._load(order)
         await self.mpv.command("playlist-play-index", start)
         await self.mpv.set("pause", False)
 
@@ -147,6 +165,7 @@ class Player:
         for t in tracks:
             await self._append(t, "append-play")
             self.state.queue.append(t)
+            self._original.append(t)
         self._notify()
 
     async def play_index(self, i: int) -> None:
@@ -158,6 +177,8 @@ class Player:
         track = self.state.queue[i]
         await self.mpv.command("playlist-remove", i)
         del self.state.queue[i]
+        with contextlib.suppress(ValueError):
+            self._original.remove(track)
         self._notify()
         return track
 
@@ -165,9 +186,70 @@ class Player:
         if self.mpv.running:
             await self.mpv.command("stop")
         self.state.queue = []
+        self._original = []
         self.state.index = -1
         self.state.context = None
         self._notify()
+
+    # --- shuffle / repeat -------------------------------------------------------------
+
+    async def set_shuffle(self, on: bool) -> None:
+        """Toggle shuffle without interrupting the current track: on = the rest of the
+        queue is randomised; off = the original order comes back."""
+        s = self.state
+        if on == s.shuffle:
+            return
+        s.shuffle = on
+        if len(s.queue) < 2 or not self.mpv.running:
+            self._notify()
+            return
+        cur = s.current
+        if on:
+            if cur is None:
+                order = list(s.queue)
+                random.shuffle(order)
+            else:
+                rest = s.queue[: s.index] + s.queue[s.index + 1 :]
+                random.shuffle(rest)
+                order = [cur, *rest]
+            new_index = 0
+        else:
+            order = list(self._original) or list(s.queue)
+            new_index = order.index(cur) if cur is not None and cur in order else 0
+        await self._reorder(order, new_index if cur is not None else -1)
+        self._notify()
+
+    async def _reorder(self, order: list[Track], current_at: int) -> None:
+        if current_at < 0:  # nothing playing: just rebuild the playlist
+            await self._load(order)
+            return
+        # mpv keeps the playing entry on playlist-clear: rebuild around it.
+        await self.mpv.command("playlist-clear")
+        for t in order[current_at + 1 :]:
+            await self._append(t)
+        for k, t in enumerate(order[:current_at]):
+            await self.mpv.command("loadfile", self._url(t), "insert-at", k, self._file_options(t))
+        self.state.queue = list(order)
+        self.state.index = current_at
+
+    async def set_repeat(self, mode: str) -> None:
+        if mode not in REPEAT_MODES:
+            raise ValueError(mode)
+        self.state.repeat = mode
+        await self._apply_repeat()
+        self._notify()
+
+    async def cycle_repeat(self) -> str:
+        nxt = REPEAT_MODES[(REPEAT_MODES.index(self.state.repeat) + 1) % len(REPEAT_MODES)]
+        await self.set_repeat(nxt)
+        return nxt
+
+    async def _apply_repeat(self) -> None:
+        if self.mpv.running:
+            await self.mpv.set("loop-file", "inf" if self.state.repeat == "one" else "no")
+            await self.mpv.set("loop-playlist", "inf" if self.state.repeat == "all" else "no")
+
+    # --- transport --------------------------------------------------------------------
 
     async def toggle_pause(self) -> None:
         if self.mpv.running and self.state.current:
@@ -178,17 +260,26 @@ class Player:
             await self.mpv.set("pause", paused)
 
     async def next(self) -> bool:
-        if self.state.index + 1 < len(self.state.queue):
+        s = self.state
+        if s.index + 1 < len(s.queue):
             await self.mpv.command("playlist-next", "force")
+            return True
+        if s.repeat == "all" and s.queue:
+            await self.play_index(0)
             return True
         return False
 
     async def prev(self) -> None:
         # Like most players: restart the track unless we're at its very beginning.
-        if self.state.position > 3 or self.state.index <= 0:
+        s = self.state
+        if s.position > 3:
             await self.seek_to(0)
-        else:
+        elif s.index > 0:
             await self.mpv.command("playlist-prev", "force")
+        elif s.repeat == "all" and len(s.queue) > 1:
+            await self.play_index(len(s.queue) - 1)
+        else:
+            await self.seek_to(0)
 
     async def seek(self, seconds: float) -> None:
         if self.state.current:

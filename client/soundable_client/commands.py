@@ -35,6 +35,8 @@ COMMAND_SPECS: list[CommandSpec] = [
     CommandSpec("/prev", "", "previous track (or restart this one)"),
     CommandSpec("/pause", "", "play / pause"),
     CommandSpec("/stop", "", "stop and clear the queue"),
+    CommandSpec("/shuffle", "[on|off]", "random order on/off (Ctrl+S)"),
+    CommandSpec("/repeat", "[off|all|one]", "repeat the queue/playlist or the song (Ctrl+R)"),
     CommandSpec("/seek", "<±sec|m:ss>", "seek, e.g. +30, -10, 1:20"),
     CommandSpec("/vol", "<0-100|±n>", "set the volume"),
     CommandSpec("/add", "<path|url>", "upload files or import a link"),

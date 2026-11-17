@@ -42,7 +42,7 @@ from soundable_client.widgets import CommandMenu, NowPlaying, PromptInput, Statu
 MODE_VIEWS = {"prompt": "log", "listen": "listen", "browse": "browse"}
 MODE_HINTS = {
     "listen": "←/→ prev/next · ↑/↓ volume · space pause · ,/. seek ±10s · "
-    "Esc prompt · Ctrl+B browse",
+    "s shuffle · r repeat · Esc prompt · Ctrl+B browse",
     "browse": "Tab/Shift+Tab switch Library · Playlists · Queue · Enter play · "
     "space pause · Esc back/prompt",
 }
@@ -54,6 +54,8 @@ class SoundableApp(App[None]):
     ENABLE_COMMAND_PALETTE = False
     BINDINGS = [
         Binding("ctrl+b", "toggle_browse", "browse", priority=True),
+        Binding("ctrl+s", "player_action('shuffle')", "shuffle", priority=True),
+        Binding("ctrl+r", "player_action('repeat')", "repeat", priority=True),
         Binding("ctrl+q", "quit", "quit", priority=True),
     ]
 
@@ -167,8 +169,11 @@ class SoundableApp(App[None]):
         # The player is (re)bound to the server once we're logged in.
         self.player = Player(Mpv(self.mpv_path, volume=self.config.volume), "", None)
         self.player.on_error(lambda msg: self.say(f"Playback: {msg}", "error"))
+        self.player.state.shuffle = self.config.shuffle
+        repeat = self.config.repeat if self.config.repeat in ("off", "all", "one") else "off"
         try:
             await self.player.start()
+            await self.player.set_repeat(repeat)
         except (MpvError, OSError) as e:
             self.say(f"Could not start mpv ({e}). Playback disabled.", "error")
             np.available = False
@@ -237,6 +242,8 @@ class SoundableApp(App[None]):
         self.config.history = self.prompt.history
         if self.player:
             self.config.volume = self.player.state.volume
+            self.config.shuffle = self.player.state.shuffle
+            self.config.repeat = self.player.state.repeat
         with contextlib.suppress(OSError):
             self.config.save()
         if self.player:
@@ -309,8 +316,40 @@ class SoundableApp(App[None]):
             "vol_down": lambda: p.change_volume(-5),
             "back": lambda: p.seek(-10),
             "fwd": lambda: p.seek(10),
+            "shuffle": self._toggle_shuffle,
+            "repeat": self._cycle_repeat,
         }
         self.run_worker(actions[what](), group="player")
+
+    def action_player_action(self, what: str) -> None:
+        if not isinstance(self.screen, ModalScreen):
+            self.player_action(what)
+
+    async def _toggle_shuffle(self) -> None:
+        if p := self._need_player():
+            await p.set_shuffle(not p.state.shuffle)
+            self._announce_modes("shuffle")
+
+    async def _cycle_repeat(self) -> None:
+        if p := self._need_player():
+            await p.cycle_repeat()
+            self._announce_modes("repeat")
+
+    def _announce_modes(self, which: str) -> None:
+        s = self.player_state()
+        if which == "shuffle":
+            if s.shuffle:
+                msg = "Shuffle on: the rest of the queue plays in random order"
+            else:
+                msg = "Shuffle off: back to the original order"
+        else:
+            msg = {
+                "off": "Repeat off",
+                "all": "Repeat all: the queue/playlist loops",
+                "one": "Repeat one: the current song loops",
+            }[s.repeat]
+        self.notify(msg, timeout=2)
+        self.say(msg)
 
     @work(group="player")
     async def play_tracks(
@@ -451,9 +490,10 @@ class SoundableApp(App[None]):
             self.say(f"Playlist '{full.name}' is empty.", "warn")
             return
         if shuffle:
-            random.shuffle(tracks)
-        await p.play_list(tracks, 0, context=full.name)
-        how = "Shuffling" if shuffle else "Playing"
+            await p.set_shuffle(True)
+        start = random.randrange(len(tracks)) if p.state.shuffle else 0
+        await p.play_list(tracks, start, context=full.name)
+        how = "Shuffling" if p.state.shuffle else "Playing"
         self.say(
             Text.assemble(
                 f"{how} playlist ",
@@ -1034,6 +1074,43 @@ class SoundableApp(App[None]):
         if p := self._need_player():
             await p.clear()
             self.say("Stopped and cleared the queue.")
+
+    async def cmd_shuffle(self, args: str) -> None:
+        p = self._need_player()
+        if not p:
+            return
+        arg = args.strip().lower()
+        if arg not in ("", "on", "off"):
+            self.say("Usage: /shuffle [on|off]", "warn")
+            return
+        target = (not p.state.shuffle) if not arg else arg == "on"
+        await p.set_shuffle(target)
+        self._announce_modes("shuffle")
+
+    async def cmd_repeat(self, args: str) -> None:
+        p = self._need_player()
+        if not p:
+            return
+        aliases = {
+            "": None,
+            "off": "off",
+            "all": "all",
+            "playlist": "all",
+            "queue": "all",
+            "one": "one",
+            "song": "one",
+            "track": "one",
+        }
+        arg = args.strip().lower()
+        if arg not in aliases:
+            self.say("Usage: /repeat [off|all|one]", "warn")
+            return
+        mode = aliases[arg]
+        if mode is None:
+            await p.cycle_repeat()
+        else:
+            await p.set_repeat(mode)
+        self._announce_modes("repeat")
 
     async def cmd_seek(self, args: str) -> None:
         p = self._need_player()

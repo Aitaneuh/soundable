@@ -50,6 +50,10 @@ current queue), `show`, `rm`, `move`, `rename … -> …`, `delete`. Or in brows
 (`Ctrl+B`, Playlists tab): Enter plays, → opens, `n` new, `e` rename, `d` delete,
 Shift+↑/↓ reorders, and `p` on any track adds it to a playlist.
 
+Shuffle / repeat: `Ctrl+S` toggles shuffle (the current song keeps playing, the rest is
+reordered; off restores the original order), `Ctrl+R` cycles repeat off → all → one.
+Also `/shuffle [on|off]`, `/repeat [off|all|one]`, or `s` / `r` in listening mode.
+
 Modes: **prompt** (default) · **listening** (`Esc`: ←/→ prev/next, ↑/↓ volume ±5 %,
 space pause, `,`/`.` seek ±10 s) · **browse** (`Ctrl+B`: navigate library and queue,
 Enter to play, `/` to filter). Windows media keys control playback too (via mpv).

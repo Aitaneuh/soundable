@@ -44,6 +44,8 @@ TOKEN_FILE = "token"
 class Config:
     server_url: str = ""
     volume: int = 70
+    shuffle: bool = False
+    repeat: str = "off"  # off | all | one
     mpv_path: str = ""  # empty = auto-detect
     history: list[str] = field(default_factory=list)
 
