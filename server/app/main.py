@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from app.config import get_settings
 from app.db import get_engine
 from app.library import cleanup_stale_tmp
+from app.paths import ForgivingPathMiddleware
 from app.routers import auth, health, imports, playlists, tracks
 from app.security import init_password_hash
 from app.subsonic.router import router as subsonic_router
@@ -40,6 +41,7 @@ def create_app() -> FastAPI:
     app.include_router(imports.router)
     app.include_router(playlists.router)
     app.include_router(subsonic_router)
+    app.add_middleware(ForgivingPathMiddleware)
     return app
 
 

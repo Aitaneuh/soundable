@@ -347,3 +347,29 @@ async def test_stream_transcodes_to_mp3(client, songs, tmp_path: Path) -> None: 
         assert stream["codec_name"] == "mp3", params
         expected = 2.0 if "timeOffset" in params else 3.0
         assert abs(float(stream.get("duration", expected)) - expected) < 0.6, params
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "//rest/ping.view",
+        "/rest/rest/ping.view",
+        "/rest/ping.view/",
+        "//rest//ping",
+        "/music/rest/ping",
+    ],
+)
+async def test_forgiving_paths(client, path: str) -> None:
+    """Server URL typed with a trailing slash or with /rest included still works."""
+    # full URL: httpx would read a bare "//rest/..." as a host name
+    r = await client.get(f"http://test{path}", params={**token_auth(), "f": "json"})
+    assert r.status_code == 200, path
+    assert r.json()["subsonic-response"]["status"] == "ok"
+
+
+def test_normalize_path_leaves_api_alone() -> None:
+    from app.paths import normalize_path
+
+    assert normalize_path("/api/tracks/x/stream") == "/api/tracks/x/stream"
+    assert normalize_path("//api//health") == "/api/health"
+    assert normalize_path("/rest/getSong.view") == "/rest/getSong.view"
