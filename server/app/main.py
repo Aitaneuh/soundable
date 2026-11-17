@@ -11,6 +11,7 @@ from app.db import get_engine
 from app.library import cleanup_stale_tmp
 from app.routers import auth, health, imports, playlists, tracks
 from app.security import init_password_hash
+from app.subsonic.router import router as subsonic_router
 
 
 def configure_logging() -> None:
@@ -38,6 +39,7 @@ def create_app() -> FastAPI:
     app.include_router(tracks.router)
     app.include_router(imports.router)
     app.include_router(playlists.router)
+    app.include_router(subsonic_router)
     return app
 
 

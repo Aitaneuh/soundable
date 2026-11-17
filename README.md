@@ -6,8 +6,29 @@ Subsonic-compatible API for iPhone apps (Amperfy, play:Sub, substreamer).
 - `server/`: FastAPI + PostgreSQL + a Postgres-backed job worker (yt-dlp imports)
 - `client/`: Textual terminal client (`soundable` command), playback through mpv
 - `docker-compose.yml`: the Portainer stack
+- [`docs/subsonic.md`](docs/subsonic.md): iPhone setup (Amperfy), curl cheat sheet
 
 > Work in progress. Full deploy / backup / update docs land with the last milestone.
+
+## Deploy on Portainer (Cloudflare Tunnel)
+
+1. Portainer → **Stacks → Add stack → Repository**: URL
+   `https://github.com/Aitaneuh/soundable`, reference `refs/heads/main`, compose path
+   `docker-compose.yml`.
+2. **Environment variables** (see `.env.example`): `POSTGRES_PASSWORD`, `ADMIN_PASSWORD`,
+   `SECRET_KEY` (≥ 32 chars), `SUBSONIC_USER`, `SUBSONIC_PASSWORD`, and `PROXY_NETWORK`
+   (the Docker network cloudflared is attached to, default `global`). Generate secrets with
+   `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
+3. **Deploy the stack**. Portainer builds the image from the repo (first build: a few minutes).
+4. Cloudflare Zero Trust → **Networks → Tunnels** → your tunnel → **Public hostname**:
+   `soundable.<your-domain>` → service `HTTP` → `soundable-api:8000`.
+5. Check `https://soundable.<your-domain>/api/health` → `{"status":"ok","db":"ok"}`.
+6. Terminal: `soundable login` with that URL. iPhone: see [docs/subsonic.md](docs/subsonic.md).
+
+If Cloudflare's *Bot Fight Mode* / WAF is on, it may challenge the iPhone app's requests
+(non-browser traffic): add a WAF skip rule for this hostname if Amperfy can't log in.
+
+To update: push to `main`, then in Portainer *Pull and redeploy* (with re-build).
 
 ## Run the server locally
 
