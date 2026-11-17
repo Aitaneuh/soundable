@@ -373,3 +373,10 @@ def test_normalize_path_leaves_api_alone() -> None:
     assert normalize_path("/api/tracks/x/stream") == "/api/tracks/x/stream"
     assert normalize_path("//api//health") == "/api/health"
     assert normalize_path("/rest/getSong.view") == "/rest/getSong.view"
+
+
+async def test_bare_server_url_answers(client) -> None:
+    """Amperfy probes the server URL before logging in; a 404 there aborts the login."""
+    assert (await client.get("/")).status_code == 200
+    assert (await client.head("/")).status_code == 200
+    assert (await client.get("/favicon.ico")).status_code == 204

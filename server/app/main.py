@@ -10,7 +10,7 @@ from app.config import get_settings
 from app.db import get_engine
 from app.library import cleanup_stale_tmp
 from app.paths import ForgivingPathMiddleware
-from app.routers import auth, health, imports, playlists, tracks
+from app.routers import auth, health, imports, playlists, root, tracks
 from app.security import init_password_hash
 from app.subsonic.router import router as subsonic_router
 
@@ -35,6 +35,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 def create_app() -> FastAPI:
     app = FastAPI(title="soundable", version="0.1.0", lifespan=lifespan)
+    app.include_router(root.router)
     app.include_router(health.router)
     app.include_router(auth.router)
     app.include_router(tracks.router)
