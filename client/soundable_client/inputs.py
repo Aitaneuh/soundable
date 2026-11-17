@@ -74,6 +74,10 @@ def classify(text: str) -> Classified:
     if not t:
         return Classified("empty")
     if t.startswith("/"):
+        # On macOS/Linux a dropped file path also starts with "/": prefer the path.
+        tokens = split_paths(t)
+        if tokens and all(Path(os.path.expanduser(tok)).exists() for tok in tokens):
+            return Classified("upload", t, tuple(Path(os.path.expanduser(x)) for x in tokens))
         return Classified("command", t)
     if is_import_url(t):
         return Classified("import", t)

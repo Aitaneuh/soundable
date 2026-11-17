@@ -76,8 +76,12 @@ def list_dumps(s: Settings) -> list[Path]:
 
 
 def dump_database(s: Settings) -> Path:
-    name = f"{DUMP_PREFIX}{datetime.now(UTC):%Y%m%d-%H%M%S}{DUMP_SUFFIX}"
-    final = db_dir(s) / name
+    stamp = f"{datetime.now(UTC):%Y%m%d-%H%M%S}"
+    final = db_dir(s) / f"{DUMP_PREFIX}{stamp}{DUMP_SUFFIX}"
+    n = 2
+    while final.exists():  # several backups within the same second
+        final = db_dir(s) / f"{DUMP_PREFIX}{stamp}-{n}{DUMP_SUFFIX}"
+        n += 1
     tmp = final.with_suffix(".partial")
     proc = subprocess.Popen(
         ["pg_dump", "--clean", "--if-exists", "--no-owner", "--no-privileges"],
