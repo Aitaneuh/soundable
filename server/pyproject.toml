@@ -1,6 +1,6 @@
 [project]
 name = "soundable-server"
-version = "0.1.0"
+version = "1.0.0"
 description = "Self-hosted single-user music server with a Subsonic-compatible API"
 requires-python = ">=3.12,<3.13"
 dependencies = [

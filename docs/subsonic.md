@@ -18,6 +18,7 @@ forces the server to know it in plaintext, so it should not be a password you us
 | track without album | album **"Singles"** of that artist |
 | playlists | playlists (same ones as in the terminal client) |
 | starred tracks | favourites (`star` / `getStarred2`) |
+| plays (terminal + phone) | play counts, "recently played" / "most played" album lists |
 
 No cover art: songs and albums carry no `coverArt` attribute, so apps show their default
 artwork and never request images (`getCoverArt` answers error 70 if called anyway).
@@ -91,7 +92,9 @@ Browsing: `getIndexes`, `getMusicDirectory`, `getArtists`, `getArtist`, `getAlbu
 Favourites: `star`, `unstar`, `getStarred`, `getStarred2`.
 Playlists: `getPlaylists`, `getPlaylist`, `createPlaylist`, `updatePlaylist`, `deletePlaylist`.
 Media: `stream`, `download`, `getCoverArt` (error 70).
-Accepted and ignored: `scrobble`, `setRating`, `savePlayQueue`, bookmarks.
+Plays: `scrobble` (with `submission=true`, the default) counts a play; songs and albums
+carry `playCount` / `played`, and `getAlbumList2` types `recent` / `frequent` use them.
+Accepted and ignored: `setRating`, `savePlayQueue`, bookmarks.
 Valid empty answers: genres, podcasts, internet radio, now playing, similar/top songs,
 artist/album info, lyrics, play queue.
 

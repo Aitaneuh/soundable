@@ -19,7 +19,7 @@ from fastapi.responses import Response
 
 API_VERSION = "1.16.1"
 SERVER_TYPE = "soundable"
-SERVER_VERSION = "0.1.0"
+SERVER_VERSION = "1.0.0"
 NAMESPACE = "http://subsonic.org/restapi"
 
 
