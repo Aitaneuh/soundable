@@ -44,6 +44,7 @@ class Track:
     bitrate_kbps: int | None
     source: str
     source_url: str | None
+    play_count: int = 0
 
     @classmethod
     def from_json(cls, d: dict[str, Any]) -> Track:
@@ -58,6 +59,7 @@ class Track:
             bitrate_kbps=d.get("bitrate_kbps"),
             source=d.get("source", "upload"),
             source_url=d.get("source_url"),
+            play_count=int(d.get("play_count") or 0),
         )
 
 
@@ -252,6 +254,9 @@ class Api:
 
     async def delete_track(self, track_id: str) -> None:
         await self._request("DELETE", f"/api/tracks/{track_id}")
+
+    async def track_played(self, track_id: str) -> None:
+        await self._request("POST", f"/api/tracks/{track_id}/played")
 
     async def stream_url(self, track_id: str) -> str:
         """Absolute signed URL that mpv can open without headers."""

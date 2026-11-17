@@ -3,13 +3,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, func, select, update
 
 from app.audio import UPLOAD_EXTENSIONS, NotAudioError, probe
 from app.config import get_settings
@@ -24,7 +25,7 @@ from app.uploads import BadUpload, UploadTooLarge, receive_upload
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/tracks", tags=["tracks"])
 
-SortKey = Literal["recent", "artist", "title"]
+SortKey = Literal["recent", "artist", "title", "played", "plays"]
 
 
 def search_filter(stmt: Select, q: str | None) -> Select:  # type: ignore[type-arg]
@@ -39,6 +40,10 @@ def search_filter(stmt: Select, q: str | None) -> Select:  # type: ignore[type-a
 
 
 def _order(sort: SortKey) -> list:  # type: ignore[type-arg]
+    if sort == "played":
+        return [Track.last_played_at.desc().nulls_last(), Track.id]
+    if sort == "plays":
+        return [Track.play_count.desc(), Track.last_played_at.desc().nulls_last(), Track.id]
     if sort == "artist":
         return [func.lower(Track.artist), func.lower(Track.album), func.lower(Track.title)]
     if sort == "title":
@@ -63,6 +68,10 @@ async def list_tracks(
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> TrackPage:
     base = search_filter(select(Track), q)
+    if sort == "played":  # history: only tracks that were played
+        base = base.where(Track.last_played_at.is_not(None))
+    elif sort == "plays":
+        base = base.where(Track.play_count > 0)
     total = await session.scalar(select(func.count()).select_from(base.subquery()))
     rows = await session.scalars(base.order_by(*_order(sort)).limit(limit).offset(offset))
     return TrackPage(
@@ -163,6 +172,21 @@ async def delete_track(track_id: uuid.UUID, session: SessionDep, _: TokenDep) ->
     # pointing at a missing file is not.
     path.unlink(missing_ok=True)
     log.info("deleted track %s", track_id)
+
+
+async def record_play(session: SessionDep, track: Track, at: datetime | None = None) -> None:
+    await session.execute(
+        update(Track)
+        .where(Track.id == track.id)
+        .values(play_count=Track.play_count + 1, last_played_at=at or func.now())
+    )
+    await session.commit()
+
+
+@router.post("/{track_id}/played", status_code=status.HTTP_204_NO_CONTENT)
+async def track_played(track_id: uuid.UUID, session: SessionDep, _: TokenDep) -> None:
+    """Count a play (the terminal client calls this after half the track / 4 minutes)."""
+    await record_play(session, await get_track_or_404(session, track_id))
 
 
 @router.get("/{track_id}/stream-url")

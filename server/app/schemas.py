@@ -24,6 +24,8 @@ class TrackOut(BaseModel):
     source: Literal["upload", "youtube", "soundcloud"]
     source_url: str | None
     created_at: datetime
+    play_count: int = 0
+    last_played_at: datetime | None = None
 
 
 class TrackPage(BaseModel):

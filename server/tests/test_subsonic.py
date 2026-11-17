@@ -380,3 +380,31 @@ async def test_bare_server_url_answers(client) -> None:
     assert (await client.get("/")).status_code == 200
     assert (await client.head("/")).status_code == 200
     assert (await client.get("/favicon.ico")).status_code == 204
+
+
+@needs_ffmpeg
+async def test_play_counts_and_scrobble(client, auth, songs) -> None:  # type: ignore[no-untyped-def]
+    a, b = songs[0]["id"], songs[1]["id"]
+    # own API (terminal client)
+    assert (await client.post(f"/api/tracks/{a}/played", headers=auth)).status_code == 204
+    assert (await client.post(f"/api/tracks/{a}/played", headers=auth)).status_code == 204
+    # Subsonic: a real play, and a "now playing" notification that must not count
+    assert (await sjson(client, "scrobble", id=b))["status"] == "ok"
+    assert (await sjson(client, "scrobble", id=b, submission="false"))["status"] == "ok"
+
+    t = (await client.get(f"/api/tracks/{a}", headers=auth)).json()
+    assert t["play_count"] == 2 and t["last_played_at"]
+    assert (await sjson(client, "getSong", id=b))["song"]["playCount"] == 1
+
+    hist = (await client.get("/api/tracks", headers=auth, params={"sort": "played"})).json()
+    assert hist["items"][0]["id"] == b  # most recent first
+    top = (await client.get("/api/tracks", headers=auth, params={"sort": "plays"})).json()
+    assert top["items"][0]["id"] == a and all(x["play_count"] > 0 for x in top["items"])
+
+    recent = (await sjson(client, "getAlbumList2", type="recent", size=50))["albumList2"]["album"]
+    assert recent[0]["id"] == album_id(songs[1]["artist"], songs[1]["album"])
+    assert all(x.get("played") for x in recent)
+    frequent = (await sjson(client, "getAlbumList2", type="frequent", size=50))["albumList2"][
+        "album"
+    ]
+    assert frequent and frequent[0]["playCount"] >= 2

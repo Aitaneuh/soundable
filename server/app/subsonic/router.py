@@ -27,7 +27,7 @@ from app.db import get_sessionmaker
 from app.deps import client_ip
 from app.library import track_path
 from app.models import Track
-from app.routers.tracks import file_response, search_filter
+from app.routers.tracks import file_response, record_play, search_filter
 from app.subsonic.auth import check_credentials
 from app.subsonic.mapping import (
     IGNORED_ARTICLES,
@@ -248,8 +248,14 @@ def _album_list(lib: Library, ctx: Ctx) -> list[Any]:
     albums = list(lib.albums.values())
     if kind == "random":
         random.shuffle(albums)
-    elif kind in ("newest", "recent", "frequent", "highest"):
-        # No play statistics: "recent/frequent/highest" fall back to newest.
+    elif kind == "recent":
+        albums = [a for a in albums if a.last_played]
+        albums.sort(key=lambda a: a.last_played, reverse=True)  # type: ignore[arg-type,return-value]
+    elif kind == "frequent":
+        albums = [a for a in albums if a.play_count]
+        albums.sort(key=lambda a: a.play_count, reverse=True)
+    elif kind in ("newest", "highest"):
+        # No ratings: "highest" falls back to newest.
         albums.sort(key=lambda a: a.created, reverse=True)
     elif kind == "alphabeticalByName":
         albums.sort(key=lambda a: (sort_name(a.display_name), sort_name(a.artist)))
@@ -360,7 +366,26 @@ async def get_play_queue(ctx: Ctx) -> None:
     return None  # no saved queue
 
 
-@endpoint("savePlayQueue", "scrobble", "setRating", "createBookmark", "deleteBookmark")
+@endpoint("scrobble")
+async def scrobble(ctx: Ctx) -> None:
+    """submission=true (default) counts a play; submission=false is a "now playing"
+    notification and is ignored. `time` (ms since epoch) dates the play if given."""
+    if (ctx.get("submission") or "true").lower() == "false":
+        return None
+    times = ctx.all("time")
+    for n, raw in enumerate(ctx.all("id")):
+        try:
+            t = await _track(ctx, raw)
+        except SubsonicError:
+            continue
+        at = None
+        if n < len(times) and times[n].isdigit():
+            at = datetime.fromtimestamp(int(times[n]) / 1000, UTC)
+        await record_play(ctx.session, t, at)
+    return None
+
+
+@endpoint("savePlayQueue", "setRating", "createBookmark", "deleteBookmark")
 async def accepted(ctx: Ctx) -> None:
     return None  # accepted and ignored (no play statistics / ratings)
 

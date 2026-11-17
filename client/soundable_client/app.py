@@ -216,6 +216,7 @@ class SoundableApp(App[None]):
         # The player is (re)bound to the server once we're logged in.
         self.player = Player(Mpv(self.mpv_path, volume=self.config.volume), "", None)
         self.player.on_error(lambda msg: self.say(f"Playback: {msg}", "error"))
+        self.player.on_played(lambda t: self.run_worker(self._report_play(t), exit_on_error=False))
         self.player.state.shuffle = self.config.shuffle
         self.player.normalize = self.config.normalize
         self.player.audio_device = self.config.audio_device
@@ -1097,6 +1098,34 @@ class SoundableApp(App[None]):
         more = f" (showing {len(tracks)})" if total > len(tracks) else ""
         self.show_tracks(tracks, f"{total} result{'s' * (total != 1)} for '{args}'{more}")
         self.say(Text("/play <n> to play from #n · /queue add <n> to queue it", style="dim"))
+
+    async def _report_play(self, track: Track) -> None:
+        if self.api and self.api.token:
+            with contextlib.suppress(ApiError):
+                await self.api.track_played(track.id)
+
+    async def cmd_history(self, args: str) -> None:
+        if not await self._ensure_api():
+            return
+        assert self.api
+        n = int(args) if args.isdigit() else 20
+        tracks, total = await self.api.tracks(sort="played", limit=min(n, 500))
+        if not tracks:
+            self.say("Nothing played yet.")
+            return
+        self.show_tracks(tracks, f"Recently played ({len(tracks)} of {total})")
+
+    async def cmd_top(self, args: str) -> None:
+        if not await self._ensure_api():
+            return
+        assert self.api
+        n = int(args) if args.isdigit() else 20
+        tracks, _ = await self.api.tracks(sort="plays", limit=min(n, 500))
+        if not tracks:
+            self.say("Nothing played yet: plays count after half a track (or 4 minutes).")
+            return
+        self.last, self.last_kind = tracks, "tracks"
+        self.show(track_table(tracks, title=f"Most played (top {len(tracks)})", plays=True))
 
     async def cmd_recent(self, args: str) -> None:
         if not await self._ensure_api():

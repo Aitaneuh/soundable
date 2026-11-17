@@ -111,6 +111,8 @@ def song(t: Track) -> dict[str, Any]:
         "type": "music",
         "mediaType": "song",
         "starred": iso(t.starred_at),
+        "playCount": t.play_count,
+        "played": iso(t.last_played_at),
     }
 
 
@@ -135,6 +137,14 @@ class Album:
     def sorted_tracks(self) -> list[Track]:
         return sorted(self.tracks, key=lambda t: (t.created_at, t.title.casefold()))
 
+    @property
+    def last_played(self) -> datetime | None:
+        return max((t.last_played_at for t in self.tracks if t.last_played_at), default=None)
+
+    @property
+    def play_count(self) -> int:
+        return sum(t.play_count for t in self.tracks)
+
     def id3(self) -> dict[str, Any]:
         starred = [t.starred_at for t in self.tracks if t.starred_at]
         return {
@@ -146,6 +156,8 @@ class Album:
             "duration": round(sum(t.duration_seconds for t in self.tracks)),
             "created": iso(self.created),
             "starred": iso(max(starred)) if starred and len(starred) == len(self.tracks) else None,
+            "playCount": self.play_count,
+            "played": iso(self.last_played),
         }
 
     def as_dir(self) -> dict[str, Any]:

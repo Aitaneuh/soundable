@@ -163,3 +163,38 @@ async def test_remapped_key_and_settings_screen(isolated, monkeypatch) -> None:
         assert cfg.keymap["listen.next"] == "k"
         await pilot.press("escape")
         assert not isinstance(app.screen, SettingsScreen)
+
+
+def test_play_is_reported_once_after_half_the_track() -> None:
+    from soundable_client.api import Track
+    from soundable_client.player import Player
+
+    class FakeMpv:
+        initial_volume = 0
+
+        def on_event(self, handler):  # type: ignore[no-untyped-def]
+            self.handler = handler
+
+    mpv = FakeMpv()
+    p = Player(mpv, "http://x", None)  # type: ignore[arg-type]
+    t = Track("id1", "Song", "Artist", None, 100.0, "audio/mpeg", "mp3", 128, "upload", None)
+    p.state.queue, p.state.index, p.state.duration = [t], 0, 100.0
+    played: list[str] = []
+    p.on_played(lambda tr: played.append(tr.id))
+
+    def pos(x: float) -> None:
+        mpv.handler({"event": "property-change", "name": "time-pos", "data": x})
+
+    pos(0.0)
+    pos(80.0)  # a seek: doesn't count as listening
+    assert played == []
+    for i in range(1, 52):  # ~50 s actually heard
+        pos(80.0 + i)
+    assert played == ["id1"]
+    for i in range(52, 60):
+        pos(80.0 + i)
+    assert played == ["id1"]  # once per listen
+    pos(0.5)  # repeat-one: the track starts over
+    for i in range(1, 52):
+        pos(0.5 + i)
+    assert played == ["id1", "id1"]

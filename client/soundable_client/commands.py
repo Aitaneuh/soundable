@@ -15,6 +15,8 @@ class CommandSpec:
 COMMAND_SPECS: list[CommandSpec] = [
     CommandSpec("/search", "<words>", "search the library"),
     CommandSpec("/recent", "[n]", "recently added tracks"),
+    CommandSpec("/history", "[n]", "recently played tracks"),
+    CommandSpec("/top", "[n]", "most played tracks"),
     CommandSpec("/play", "[n|words]", "play the listed tracks from #n, or search and play"),
     CommandSpec("/queue", "", "show the queue"),
     CommandSpec("/queue add", "<n…>", "add listed tracks to the queue (1 3 5-7)"),

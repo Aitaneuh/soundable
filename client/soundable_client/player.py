@@ -56,11 +56,36 @@ class Player:
         self.normalize = False
         self.audio_device = "auto"
         self._listeners: list[Callable[[PlayerState], None]] = []
+        self._played_listeners: list[Callable[[Track], None]] = []
+        self._listened = 0.0  # seconds actually heard of the current track
+        self._reported = False
         self._error_listeners: list[Callable[[str], None]] = []
         mpv.on_event(self._on_event)
 
     def on_change(self, cb: Callable[[PlayerState], None]) -> None:
         self._listeners.append(cb)
+
+    def on_played(self, cb: Callable[[Track], None]) -> None:
+        """Called once per listen, after half the track (or 4 minutes), like scrobblers."""
+        self._played_listeners.append(cb)
+
+    def _track_listening(self, new_pos: float) -> None:
+        s = self.state
+        delta = new_pos - s.position
+        if self._reported and new_pos < 2 and delta < -5:
+            # the same track started over (repeat one): a new listen
+            self._listened, self._reported = 0.0, False
+        if not s.paused and 0 < delta < 2:  # ignore seeks
+            self._listened += delta
+        cur = s.current
+        if cur is None or self._reported:
+            return
+        duration = s.duration or cur.duration
+        threshold = min(max(duration * 0.5, 10.0), 240.0) if duration > 0 else 240.0
+        if self._listened >= threshold:
+            self._reported = True
+            for cb in self._played_listeners:
+                cb(cur)
 
     def on_error(self, cb: Callable[[str], None]) -> None:
         self._error_listeners.append(cb)
@@ -101,7 +126,9 @@ class Player:
         if name == "property-change":
             prop, data = ev.get("name"), ev.get("data")
             if prop == "time-pos":
-                s.position = float(data or 0)
+                new_pos = float(data or 0)
+                self._track_listening(new_pos)
+                s.position = new_pos
             elif prop == "duration":
                 s.duration = float(data or 0)
             elif prop == "pause":
@@ -111,6 +138,7 @@ class Player:
             elif prop == "playlist-pos":
                 s.index = int(data) if data is not None else -1
                 s.position = 0.0
+                self._listened, self._reported = 0.0, False
             elif prop == "idle-active":
                 s.idle = bool(data)
                 if s.idle:

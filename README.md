@@ -105,6 +105,10 @@ current queue), `show`, `rm`, `move`, `rename … -> …`, `delete`. Or in brows
 (`Ctrl+B`, Playlists tab): Enter plays, → opens, `n` new, `e` rename, `d` delete,
 Shift+↑/↓ reorders, and `p` on any track adds it to a playlist.
 
+History: a play counts after half a track (or 4 minutes), from the terminal and from
+Subsonic apps (scrobble). `/history` = recently played, `/top` = most played; Amperfy's
+"recent" and "frequent" album lists use the same data.
+
 Shuffle / repeat: `Ctrl+S` toggles shuffle (the current song keeps playing, the rest is
 reordered; off restores the original order), `Ctrl+R` cycles repeat off → all → one.
 Also `/shuffle [on|off]`, `/repeat [off|all|one]`, or `s` / `r` in listening mode.

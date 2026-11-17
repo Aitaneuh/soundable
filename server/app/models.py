@@ -75,6 +75,8 @@ class Track(TimestampMixin, Base):
     source_key: Mapped[str | None] = mapped_column(Text, unique=True)
     content_sha256: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
     starred_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    play_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0", default=0)
+    last_played_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )

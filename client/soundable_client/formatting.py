@@ -54,6 +54,7 @@ def track_table(
     title: str | None = None,
     current: int | None = None,
     start: int = 1,
+    plays: bool = False,
 ) -> Table:
     table = Table(
         box=box.SIMPLE_HEAD,
@@ -69,16 +70,21 @@ def track_table(
     table.add_column("Artist", style="cyan", overflow="ellipsis", max_width=32)
     table.add_column("Album", style="dim", overflow="ellipsis", max_width=28)
     table.add_column("Time", justify="right", style="dim", no_wrap=True)
+    if plays:
+        table.add_column("Plays", justify="right", no_wrap=True)
     for i, t in enumerate(tracks):
         is_current = current is not None and i == current
         num = Text("▶", style=f"bold {accent()}") if is_current else Text(str(start + i))
-        table.add_row(
+        cells = [
             num,
             Text(t.title, style=f"bold {accent()}" if is_current else ""),
             t.artist,
             t.album or "",
             fmt_time(t.duration),
-        )
+        ]
+        if plays:
+            cells.append(str(t.play_count))
+        table.add_row(*cells)
     return table
 
 
