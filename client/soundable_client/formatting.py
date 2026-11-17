@@ -10,7 +10,17 @@ from rich.text import Text
 
 from soundable_client.api import Track
 
-ACCENT = "#d97757"  # warm orange, Claude-Code-ish
+DEFAULT_ACCENT = "#d97757"  # warm orange, Claude-Code-ish
+_accent = [DEFAULT_ACCENT]
+
+
+def accent() -> str:
+    """Current accent colour (changeable in /settings)."""
+    return _accent[0]
+
+
+def set_accent(color: str) -> None:
+    _accent[0] = color
 
 
 def fmt_time(seconds: float | None) -> str:
@@ -61,10 +71,10 @@ def track_table(
     table.add_column("Time", justify="right", style="dim", no_wrap=True)
     for i, t in enumerate(tracks):
         is_current = current is not None and i == current
-        num = Text("▶", style=f"bold {ACCENT}") if is_current else Text(str(start + i))
+        num = Text("▶", style=f"bold {accent()}") if is_current else Text(str(start + i))
         table.add_row(
             num,
-            Text(t.title, style=f"bold {ACCENT}" if is_current else ""),
+            Text(t.title, style=f"bold {accent()}" if is_current else ""),
             t.artist,
             t.album or "",
             fmt_time(t.duration),
@@ -72,10 +82,10 @@ def track_table(
     return table
 
 
-def progress_bar(fraction: float, width: int, *, color: str = ACCENT) -> Text:
+def progress_bar(fraction: float, width: int, *, color: str | None = None) -> Text:
     width = max(width, 4)
     fraction = min(max(fraction, 0.0), 1.0)
     filled = round(fraction * width)
-    bar = Text("━" * filled, style=color)
+    bar = Text("━" * filled, style=color or accent())
     bar.append("─" * (width - filled), style="grey35")
     return bar

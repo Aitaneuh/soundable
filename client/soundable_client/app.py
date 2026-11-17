@@ -15,15 +15,28 @@ from rich.table import Table
 from rich.text import Text
 from textual import on, work
 from textual.app import App, ComposeResult
-from textual.binding import Binding
 from textual.screen import ModalScreen
 from textual.widgets import ContentSwitcher, Input, RichLog, Static
 
-from soundable_client import __version__
+from soundable_client import __version__, keys
 from soundable_client.api import Api, ApiError, AuthError, Job, NetworkError, Playlist, Track
 from soundable_client.commands import match_commands
-from soundable_client.config import Config, delete_token, load_token, save_token
-from soundable_client.formatting import ACCENT, fmt_size, fmt_time, fold, track_table
+from soundable_client.config import (
+    Config,
+    SessionState,
+    delete_token,
+    load_token,
+    save_token,
+)
+from soundable_client.formatting import (
+    DEFAULT_ACCENT,
+    accent,
+    fmt_size,
+    fmt_time,
+    fold,
+    set_accent,
+    track_table,
+)
 from soundable_client.inputs import AUDIO_EXTENSIONS, classify, expand_audio_paths, split_paths
 from soundable_client.mpv import Mpv, MpvError, find_mpv, install_hint
 from soundable_client.player import Player, PlayerState
@@ -40,12 +53,23 @@ from soundable_client.views import BrowseView, ListenView, help_text
 from soundable_client.widgets import CommandMenu, NowPlaying, PromptInput, StatusHeader, TaskList
 
 MODE_VIEWS = {"prompt": "log", "listen": "listen", "browse": "browse"}
-MODE_HINTS = {
-    "listen": "←/→ prev/next · ↑/↓ volume · space pause · ,/. seek ±10s · "
-    "s shuffle · r repeat · Esc prompt · Ctrl+B browse",
-    "browse": "Tab/Shift+Tab switch Library · Playlists · Queue · Enter play · "
-    "space pause · Esc back/prompt",
-}
+
+
+def mode_hints(mode: str) -> str:
+    k = keys.show
+    if mode == "listen":
+        return (
+            f"{k('listen.prev')}/{k('listen.next')} prev/next · "
+            f"{k('listen.vol_up')}/{k('listen.vol_down')} volume · {k('listen.pause')} pause · "
+            f"{k('listen.back')}/{k('listen.fwd')} seek · {k('listen.shuffle')} shuffle · "
+            f"{k('listen.repeat')} repeat · Esc prompt · {k('app.browse')} browse"
+        )
+    if mode == "browse":
+        return (
+            "Tab/Shift+Tab switch Library · Playlists · Queue · Enter play · "
+            f"{k('browse.pause')} pause · Esc back/prompt · {k('app.settings')} settings"
+        )
+    return ""
 
 
 class SoundableApp(App[None]):
@@ -53,10 +77,11 @@ class SoundableApp(App[None]):
     TITLE = "soundable"
     ENABLE_COMMAND_PALETTE = False
     BINDINGS = [
-        Binding("ctrl+b", "toggle_browse", "browse", priority=True),
-        Binding("ctrl+s", "player_action('shuffle')", "shuffle", priority=True),
-        Binding("ctrl+r", "player_action('repeat')", "repeat", priority=True),
-        Binding("ctrl+q", "quit", "quit", priority=True),
+        keys.binding("app.browse", "toggle_browse", priority=True),
+        keys.binding("app.shuffle", "player_action('shuffle')", priority=True),
+        keys.binding("app.repeat", "player_action('repeat')", priority=True),
+        keys.binding("app.settings", "open_settings", priority=True),
+        keys.binding("app.quit", "quit", priority=True),
     ]
 
     def __init__(self, config: Config, *, force_login: bool = False) -> None:
@@ -72,6 +97,8 @@ class SoundableApp(App[None]):
         self.online = False
         self._login_open = False
         self._tracked_jobs: set[str] = set()
+        self._restored = False
+        self._started_mode = False
         self.last_playlists: list[Playlist] = []
         self.last_playlist: Playlist | None = None
 
@@ -118,7 +145,7 @@ class SoundableApp(App[None]):
     def say(self, message: str | Text, kind: str = "info") -> None:
         color = {"info": "white", "ok": "green", "warn": "yellow", "error": "red"}[kind]
         t = Text()
-        t.append("⏺ ", style=color if kind != "info" else ACCENT)
+        t.append("⏺ ", style=color if kind != "info" else accent())
         t.append_text(message if isinstance(message, Text) else Text(message))
         self._write_text(t)
 
@@ -138,11 +165,29 @@ class SoundableApp(App[None]):
 
     # --- lifecycle --------------------------------------------------------------------
 
+    def get_css_variables(self) -> dict[str, str]:
+        # Called by Textual's constructor too, before self.config exists.
+        config = getattr(self, "config", None)
+        color = config.accent if config else DEFAULT_ACCENT
+        return {**super().get_css_variables(), "soundable-accent": color}
+
+    def _apply_appearance(self) -> None:
+        if self.config.theme in self.available_themes:
+            self.theme = self.config.theme
+        set_accent(self.config.accent)
+        self.refresh_css()
+
+    def _apply_keymap(self) -> None:
+        keys.set_overrides(self.config.keymap)
+        self.set_keymap(dict(self.config.keymap))
+
     def on_mount(self) -> None:
+        self._apply_appearance()
+        self._apply_keymap()
         self.header.server = self.config.server_url
         self.prompt.focus()
         welcome = Text()
-        welcome.append("✻ ", style=f"bold {ACCENT}")
+        welcome.append("✻ ", style=f"bold {accent()}")
         welcome.append(f"soundable {__version__}", style="bold")
         welcome.append("  ·  /help for commands  ·  Esc listening mode  ·  Ctrl+B browse")
         self._write_text(welcome)
@@ -170,6 +215,8 @@ class SoundableApp(App[None]):
         self.player = Player(Mpv(self.mpv_path, volume=self.config.volume), "", None)
         self.player.on_error(lambda msg: self.say(f"Playback: {msg}", "error"))
         self.player.state.shuffle = self.config.shuffle
+        self.player.normalize = self.config.normalize
+        self.player.audio_device = self.config.audio_device
         repeat = self.config.repeat if self.config.repeat in ("off", "all", "one") else "off"
         try:
             await self.player.start()
@@ -204,6 +251,46 @@ class SoundableApp(App[None]):
         self.say(f"Connected to {url} as '{me['name']}' · {total} tracks in the library.", "ok")
         for job in await self.api.jobs(status=["queued", "running"], limit=50):
             self.track_job(job)
+        await self._restore_session()
+        if self.config.start_mode in ("listen", "browse") and not self._started_mode:
+            self._started_mode = True
+            self.set_mode(self.config.start_mode)
+
+    async def _restore_session(self) -> None:
+        if not (self.config.restore_queue and self.player and self.api) or self._restored:
+            return
+        self._restored = True
+        st = SessionState.load()
+        if st.server_url != self.api.base_url or not st.queue:
+            return
+        try:
+            by_id = {t.id: t for t in await self.api.all_tracks()}
+        except ApiError:
+            return
+        queue = [by_id[i] for i in st.queue if i in by_id]
+        original = [by_id[i] for i in st.original if i in by_id]
+        if not queue:
+            return
+        current = st.queue[st.index] if 0 <= st.index < len(st.queue) else None
+        index = next((k for k, t in enumerate(queue) if t.id == current), 0)
+        await self.player.restore(queue, original, index, st.position, st.context)
+        t = queue[index]
+        self.say(
+            Text.assemble(
+                "Resumed your queue (paused): ",
+                (t.title, "bold"),
+                " — ",
+                (t.artist, "cyan"),
+                (f" at {fmt_time(st.position)} · space/Esc to listen", "dim"),
+            )
+        )
+
+    def _save_session(self) -> None:
+        if not (self.player and self.api):
+            return
+        queue, original, index, position, context = self.player.snapshot()
+        with contextlib.suppress(OSError):
+            SessionState(self.api.base_url, queue, original, index, position, context).save()
 
     def open_login(self, *, can_cancel: bool = True) -> None:
         if self._login_open:
@@ -246,6 +333,7 @@ class SoundableApp(App[None]):
             self.config.repeat = self.player.state.repeat
         with contextlib.suppress(OSError):
             self.config.save()
+        self._save_session()
         if self.player:
             await self.player.shutdown()
         if self.api:
@@ -254,8 +342,17 @@ class SoundableApp(App[None]):
 
     # --- modes --------------------------------------------------------------------------
 
+    def _on_main_screen(self) -> bool:
+        return self.screen is self.screen_stack[0]
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        # While capturing a new key in settings, let every key reach that screen.
+        from soundable_client.settings import KeyCaptureScreen
+
+        return not isinstance(self.screen, KeyCaptureScreen)
+
     def set_mode(self, mode: str, initial_text: str = "") -> None:
-        if isinstance(self.screen, ModalScreen):
+        if not self._on_main_screen():
             return
         self.mode = mode
         self.header.mode = mode
@@ -265,7 +362,7 @@ class SoundableApp(App[None]):
         if mode != "prompt":
             self.query_one(CommandMenu).hide()
         hints.display = mode != "prompt"
-        hints.update(Text(MODE_HINTS.get(mode, ""), style="dim"))
+        hints.update(Text(mode_hints(mode), style="dim"))
         if mode == "prompt":
             if initial_text:
                 self.prompt.value += initial_text
@@ -312,10 +409,10 @@ class SoundableApp(App[None]):
             "pause": p.toggle_pause,
             "next": p.next,
             "prev": p.prev,
-            "vol_up": lambda: p.change_volume(5),
-            "vol_down": lambda: p.change_volume(-5),
-            "back": lambda: p.seek(-10),
-            "fwd": lambda: p.seek(10),
+            "vol_up": lambda: p.change_volume(self.config.volume_step),
+            "vol_down": lambda: p.change_volume(-self.config.volume_step),
+            "back": lambda: p.seek(-self.config.seek_step),
+            "fwd": lambda: p.seek(self.config.seek_step),
             "shuffle": self._toggle_shuffle,
             "repeat": self._cycle_repeat,
         }
@@ -324,6 +421,48 @@ class SoundableApp(App[None]):
     def action_player_action(self, what: str) -> None:
         if not isinstance(self.screen, ModalScreen):
             self.player_action(what)
+
+    # --- settings -----------------------------------------------------------------------
+
+    def action_open_settings(self) -> None:
+        from soundable_client.settings import SettingsScreen
+
+        if self._on_main_screen():
+            self.push_screen(SettingsScreen())
+
+    async def cmd_settings(self, _: str) -> None:
+        self.action_open_settings()
+
+    def update_setting(self, name: str, value: object) -> None:
+        if getattr(self.config, name, object()) == value:
+            return
+        setattr(self.config, name, value)
+        with contextlib.suppress(OSError):
+            self.config.save()
+        if name in ("theme", "accent"):
+            self._apply_appearance()
+            self.refresh()
+        elif name == "normalize" and self.player:
+            self.run_worker(self.player.set_normalize(bool(value)))
+        elif name == "audio_device" and self.player:
+            self.run_worker(self.player.set_audio_device(str(value)))
+        elif name == "library_sort":
+            self.query_one(BrowseView).library = []  # reload with the new order on next visit
+
+    def set_key(self, action_id: str, key: str | None) -> None:
+        if key is None or key == keys.BY_ID[action_id].default:
+            self.config.keymap.pop(action_id, None)
+        else:
+            self.config.keymap[action_id] = key
+        with contextlib.suppress(OSError):
+            self.config.save()
+        self._apply_keymap()
+
+    def reset_keys(self) -> None:
+        self.config.keymap.clear()
+        with contextlib.suppress(OSError):
+            self.config.save()
+        self._apply_keymap()
 
     async def _toggle_shuffle(self) -> None:
         if p := self._need_player():
@@ -395,7 +534,7 @@ class SoundableApp(App[None]):
         assert self.api
         tid = self.tasks.add("Loading library…")
         try:
-            tracks = await self.api.all_tracks(sort="artist")
+            tracks = await self.api.all_tracks(sort=self.config.library_sort)
             self.query_one(BrowseView).set_library(tracks)
         except ApiError as e:
             self._api_error(e)
@@ -497,7 +636,7 @@ class SoundableApp(App[None]):
         self.say(
             Text.assemble(
                 f"{how} playlist ",
-                (full.name, f"bold {ACCENT}"),
+                (full.name, f"bold {accent()}"),
                 (f"  {len(tracks)} tracks · {fmt_time(full.duration)}", "dim"),
             )
         )
@@ -704,7 +843,7 @@ class SoundableApp(App[None]):
             title_style="bold",
         )
         table.add_column("#", justify="right", style="dim")
-        table.add_column("Name", style=f"bold {ACCENT}")
+        table.add_column("Name", style=f"bold {accent()}")
         table.add_column("Tracks", justify="right")
         table.add_column("Duration", justify="right", style="dim")
         for i, p in enumerate(playlists, 1):
@@ -1275,7 +1414,7 @@ class SoundableApp(App[None]):
         table.add_column("Status")
         table.add_column("Track", overflow="ellipsis", max_width=50)
         table.add_column("Details", style="dim", overflow="fold", max_width=60)
-        styles = {"done": "green", "failed": "red", "running": ACCENT, "queued": "yellow"}
+        styles = {"done": "green", "failed": "red", "running": accent(), "queued": "yellow"}
         for i, j in enumerate(jobs, 1):
             status = j.status + (f" {j.progress}%" if j.status == "running" else "")
             detail = j.error or (j.track.source if j.track else j.url or "")

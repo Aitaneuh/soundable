@@ -111,3 +111,55 @@ def test_playlist_commands_in_menu() -> None:
 
     names = [c.name for c in match_commands("/playlist ")]
     assert "/playlist play" in names and "/playlist save" in names
+
+
+def test_key_validation() -> None:
+    from soundable_client import keys
+
+    keys.set_overrides({})
+    assert keys.validate("app.browse", "x") is not None  # global needs a modifier
+    assert keys.validate("app.browse", "ctrl+l") is None
+    assert keys.validate("app.browse", "f5") is None
+    assert "already used" in (keys.validate("app.browse", "ctrl+s") or "")
+    assert "reserved" in (keys.validate("listen.next", "escape") or "")
+    assert keys.validate("listen.next", "l") is None
+    assert "already used" in (keys.validate("listen.next", "s") or "")  # listen.shuffle
+    assert keys.validate("browse.enqueue", "l") is None  # other scope: fine
+    assert keys.display_key("ctrl+b") == "Ctrl+B" and keys.show("listen.back") == "Shift+← / ,"
+
+
+async def test_remapped_key_and_settings_screen(isolated, monkeypatch) -> None:
+    from soundable_client.settings import KeyCaptureScreen, SettingsScreen
+
+    cfg = Config(server_url="http://localhost:1")
+    cfg.keymap = {"listen.next": "l"}
+    app = appmod.SoundableApp(cfg)
+    calls: list[str] = []
+    monkeypatch.setattr(app, "player_action", calls.append)
+    async with app.run_test() as pilot:
+        await _ready_app(pilot, app)
+        await pilot.press("escape")  # listening mode
+        assert app.mode == "listen"
+        await pilot.press("l")
+        assert calls == ["next"]  # remapped key works...
+        await pilot.press("right")
+        assert calls == ["next"]  # ...and the old one no longer does
+        assert app.mode == "listen"
+
+        await pilot.press("f2")
+        assert isinstance(app.screen, SettingsScreen)
+        app.update_setting("theme", "nord")
+        assert app.theme == "nord" and cfg.theme == "nord"
+
+        # capture a new key for "Next track" through the dialog
+        app.screen.query_one("#keys").focus()
+        app.screen.query_one("#keys").move_cursor(row=6)  # listen.next
+        await pilot.press("enter")
+        assert isinstance(app.screen, KeyCaptureScreen)
+        await pilot.press("s")  # conflicts with shuffle -> refused, dialog stays
+        assert isinstance(app.screen, KeyCaptureScreen)
+        await pilot.press("k")
+        await pilot.pause(0.1)
+        assert cfg.keymap["listen.next"] == "k"
+        await pilot.press("escape")
+        assert not isinstance(app.screen, SettingsScreen)

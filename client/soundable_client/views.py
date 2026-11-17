@@ -14,9 +14,10 @@ from textual.containers import Vertical
 from textual.widget import Widget
 from textual.widgets import ContentSwitcher, DataTable, Input, Static
 
+from soundable_client import keys
 from soundable_client.api import Playlist, Track
 from soundable_client.commands import COMMAND_SPECS
-from soundable_client.formatting import ACCENT, fmt_time, fold, progress_bar, track_table
+from soundable_client.formatting import accent, fmt_time, fold, progress_bar, track_table
 from soundable_client.player import PlayerState
 
 if TYPE_CHECKING:
@@ -27,15 +28,15 @@ class ListenView(Widget, can_focus=True):
     """Full-screen now playing. ←/→ track, ↑/↓ volume, space pause."""
 
     BINDINGS = [
-        Binding("left", "player('prev')", "prev"),
-        Binding("right", "player('next')", "next"),
-        Binding("up", "player('vol_up')", "vol +5"),
-        Binding("down", "player('vol_down')", "vol -5"),
-        Binding("space", "player('pause')", "play/pause"),
-        Binding("shift+left,comma", "player('back')", "-10s"),
-        Binding("shift+right,full_stop", "player('fwd')", "+10s"),
-        Binding("s", "player('shuffle')", "shuffle"),
-        Binding("r", "player('repeat')", "repeat"),
+        keys.binding("listen.prev", "player('prev')"),
+        keys.binding("listen.next", "player('next')"),
+        keys.binding("listen.vol_up", "player('vol_up')"),
+        keys.binding("listen.vol_down", "player('vol_down')"),
+        keys.binding("listen.pause", "player('pause')"),
+        keys.binding("listen.back", "player('back')"),
+        keys.binding("listen.fwd", "player('fwd')"),
+        keys.binding("listen.shuffle", "player('shuffle')"),
+        keys.binding("listen.repeat", "player('repeat')"),
         Binding("escape", "app.set_mode('prompt')", "prompt"),
     ]
 
@@ -58,7 +59,9 @@ class ListenView(Widget, can_focus=True):
 
     def on_key(self, event: events.Key) -> None:
         # Start typing anywhere -> back to the prompt with that character.
-        if event.is_printable and event.character and event.character not in " ,.sr":
+        if event.key in keys.scope_keys("listen"):
+            return  # handled by a (possibly remapped) binding
+        if event.is_printable and event.character:
             event.stop()
             self.sapp.set_mode("prompt", initial_text=event.character)
 
@@ -75,7 +78,7 @@ class ListenView(Widget, can_focus=True):
         t = s.current
         lines = Text(justify="center")
         lines.append("\n")
-        lines.append(("⏸  " if s.paused else "▶  "), style=f"bold {ACCENT}")
+        lines.append(("⏸  " if s.paused else "▶  "), style=f"bold {accent()}")
         lines.append(t.title + "\n", style="bold")
         lines.append(t.artist + "\n", style="cyan")
         if t.album:
@@ -90,10 +93,10 @@ class ListenView(Widget, can_focus=True):
         lines.append_text(progress_bar(s.volume / 100, 20, color="cyan"))
         lines.append(f" {s.volume}%", style="dim")
         lines.append("\n\n")
-        lines.append("⇄ shuffle", style=f"bold {ACCENT}" if s.shuffle else "grey35")
+        lines.append("⇄ shuffle", style=f"bold {accent()}" if s.shuffle else "grey35")
         lines.append("    ")
         rep = {"off": "↻ repeat off", "all": "↻ repeat all", "one": "↻ repeat one"}[s.repeat]
-        lines.append(rep, style=f"bold {ACCENT}" if s.repeat != "off" else "grey35")
+        lines.append(rep, style=f"bold {accent()}" if s.repeat != "off" else "grey35")
         big.update(lines)
 
         rest = s.queue[s.index + 1 :]
@@ -103,13 +106,29 @@ class ListenView(Widget, can_focus=True):
             upnext.update(Text("End of queue.", style="dim"))
 
 
-PANE_HINTS = {
-    "lib": "Enter play · a queue · p add to playlist · e edit · d delete · / filter · r refresh",
-    "pls": "Enter play · → open · n new · e rename · d delete",
-    "plt": "Enter play from here · ← back · p add to another playlist · d remove · "
-    "shift+↑/↓ move · e edit track",
-    "queue": "Enter jump to · p add to playlist · d remove · e edit track",
-}
+def pane_hints(pane: str) -> str:
+    k = keys.show
+    if pane == "lib":
+        return (
+            f"Enter play · {k('browse.enqueue')} queue · {k('browse.add_to_playlist')} add to "
+            f"playlist · {k('browse.edit')} edit · {k('browse.delete')} delete · "
+            f"{k('browse.filter')} filter · {k('browse.refresh')} refresh"
+        )
+    if pane == "pls":
+        return (
+            f"Enter play · → open · {k('browse.new_playlist')} new · {k('browse.edit')} rename "
+            f"· {k('browse.delete')} delete"
+        )
+    if pane == "plt":
+        return (
+            f"Enter play from here · ← back · {k('browse.add_to_playlist')} add to another "
+            f"playlist · {k('browse.delete')} remove · {k('browse.move_up')}/"
+            f"{k('browse.move_down')} move · {k('browse.edit')} edit track"
+        )
+    return (
+        f"Enter jump to · {k('browse.add_to_playlist')} add to playlist · "
+        f"{k('browse.delete')} remove · {k('browse.edit')} edit track"
+    )
 
 
 class BrowseView(Vertical):
@@ -120,16 +139,16 @@ class BrowseView(Vertical):
         Binding("shift+tab", "switch_pane(-1)", "previous tab", priority=True),
         Binding("right,o", "open_playlist", "open", priority=True),
         Binding("left,backspace", "close_playlist", "back", priority=True),
-        Binding("a", "enqueue", "add to queue"),
-        Binding("p", "add_to_playlist", "add to playlist"),
-        Binding("n", "new_playlist", "new playlist"),
-        Binding("e", "edit", "edit/rename"),
-        Binding("d,delete", "delete", "delete/remove"),
-        Binding("shift+up", "move(-1)", "move up"),
-        Binding("shift+down", "move(1)", "move down"),
-        Binding("r", "refresh", "refresh"),
-        Binding("slash", "filter", "filter"),
-        Binding("space", "pause", "play/pause"),
+        keys.binding("browse.enqueue", "enqueue"),
+        keys.binding("browse.add_to_playlist", "add_to_playlist"),
+        keys.binding("browse.new_playlist", "new_playlist"),
+        keys.binding("browse.edit", "edit"),
+        keys.binding("browse.delete", "delete"),
+        keys.binding("browse.move_up", "move(-1)"),
+        keys.binding("browse.move_down", "move(1)"),
+        keys.binding("browse.refresh", "refresh"),
+        keys.binding("browse.filter", "filter"),
+        keys.binding("browse.pause", "pause"),
         Binding("escape", "back", "back"),
     ]
 
@@ -194,11 +213,11 @@ class BrowseView(Vertical):
         active = "pl" if self.pane in ("pls", "plt") else self.pane
         t = Text(" ")
         for key, label in tabs:
-            style = f"bold reverse {ACCENT}" if key == active else "dim"
+            style = f"bold reverse {accent()}" if key == active else "dim"
             t.append(f" {label} ", style=style)
             t.append("  ")
         t.append("\n ")
-        t.append(PANE_HINTS[self.pane], style="dim")
+        t.append(pane_hints(self.pane), style="dim")
         self.query_one("#browse-tabs", Static).update(t)
 
     def _show(self, pane: str) -> None:
@@ -420,7 +439,7 @@ def _fill_tracks(table: DataTable, tracks: list[Track], current: int | None = No
     table.clear()
     for i, t in enumerate(tracks):
         is_cur = current is not None and i == current
-        style = f"bold {ACCENT}" if is_cur else ""
+        style = f"bold {accent()}" if is_cur else ""
         table.add_row(
             Text("▶" if is_cur else str(i + 1), style=style),
             Text(t.title, style=style),
@@ -456,5 +475,6 @@ def help_text() -> Group:
     row("Ctrl+B", "browse (library & queue, Enter play, / filter, space pause)")
     row("Ctrl+S / Ctrl+R", "shuffle on/off · repeat off -> all -> one (any mode)")
     row("Media keys", "play/pause/next/prev work system-wide (via mpv)")
+    row("F2 or /settings", "theme, accent, key remapping, playback options")
     row("Ctrl+Q", "quit")
     return Group(*out)

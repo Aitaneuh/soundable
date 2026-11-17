@@ -44,6 +44,7 @@ COMMAND_SPECS: list[CommandSpec] = [
     CommandSpec("/edit", "<n>", "edit title / artist / album of a listed track"),
     CommandSpec("/delete", "<n>", "delete a listed track from the server"),
     CommandSpec("/library", "", "browse mode (same as Ctrl+B)"),
+    CommandSpec("/settings", "", "theme, keys, playback options (F2)"),
     CommandSpec("/login", "", "log in / change server"),
     CommandSpec("/logout", "", "revoke and forget the token"),
     CommandSpec("/clear", "", "clear the screen"),

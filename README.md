@@ -76,6 +76,11 @@ Shuffle / repeat: `Ctrl+S` toggles shuffle (the current song keeps playing, the 
 reordered; off restores the original order), `Ctrl+R` cycles repeat off → all → one.
 Also `/shuffle [on|off]`, `/repeat [off|all|one]`, or `s` / `r` in listening mode.
 
+Settings: `/settings` or `F2`: theme (all Textual themes, live preview), accent colour,
+resume the last queue on start, loudness normalisation, audio output device, volume/seek
+steps, start mode, library order, and **key remapping** (every shortcut, with conflict
+checks). Saved in the client's config file.
+
 Modes: **prompt** (default) · **listening** (`Esc`: ←/→ prev/next, ↑/↓ volume ±5 %,
 space pause, `,`/`.` seek ±10 s) · **browse** (`Ctrl+B`: navigate library and queue,
 Enter to play, `/` to filter). Windows media keys control playback too (via mpv).

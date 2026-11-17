@@ -28,12 +28,12 @@ Screen {
 }
 
 #prompt {
-    border: round #d97757;
+    border: round $soundable-accent;
     margin: 0 0;
 }
 
 #prompt:focus {
-    border: round #d97757;
+    border: round $soundable-accent;
 }
 
 #hints {
@@ -53,7 +53,7 @@ ModalScreen {
     width: 64;
     height: auto;
     padding: 1 2;
-    border: round #d97757;
+    border: round $soundable-accent;
     background: $surface;
 }
 

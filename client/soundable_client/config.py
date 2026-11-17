@@ -46,6 +46,17 @@ class Config:
     volume: int = 70
     shuffle: bool = False
     repeat: str = "off"  # off | all | one
+    # --- /settings ---
+    theme: str = "textual-dark"
+    accent: str = "#d97757"
+    volume_step: int = 5
+    seek_step: int = 10
+    normalize: bool = False  # loudness normalisation in mpv
+    audio_device: str = "auto"
+    restore_queue: bool = True  # resume the last queue (paused) on startup
+    start_mode: str = "prompt"  # prompt | listen | browse
+    library_sort: str = "artist"  # artist | title | recent
+    keymap: dict[str, str] = field(default_factory=dict)  # binding id -> keys
     mpv_path: str = ""  # empty = auto-detect
     history: list[str] = field(default_factory=list)
 
@@ -84,6 +95,35 @@ def normalize_server_url(raw: str) -> str:
     if p.query or p.fragment:
         raise InvalidServerUrl("the URL must not contain a query string or fragment")
     return url
+
+
+@dataclass
+class SessionState:
+    """What was playing when the app quit, to resume it on the next start."""
+
+    server_url: str = ""
+    queue: list[str] = field(default_factory=list)  # track ids, play order
+    original: list[str] = field(default_factory=list)  # track ids before shuffling
+    index: int = -1
+    position: float = 0.0
+    context: str | None = None
+
+    FILE = "session.json"
+
+    @classmethod
+    def load(cls) -> SessionState:
+        try:
+            data = json.loads((state_dir() / cls.FILE).read_text(encoding="utf-8"))
+            known = {k: v for k, v in data.items() if k in cls.__dataclass_fields__}
+            return cls(**known)
+        except (OSError, ValueError, TypeError):
+            return cls()
+
+    def save(self) -> None:
+        path = state_dir() / self.FILE
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(asdict(self)), encoding="utf-8")
+        os.replace(tmp, path)
 
 
 # --- Token storage ------------------------------------------------------------------

@@ -14,7 +14,7 @@ from textual.widgets import Input, OptionList, Static
 from textual.widgets.option_list import Option
 
 from soundable_client.commands import CommandSpec, match_commands
-from soundable_client.formatting import ACCENT, fmt_time, progress_bar
+from soundable_client.formatting import accent, fmt_time, progress_bar
 from soundable_client.player import PlayerState
 
 SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
@@ -27,7 +27,7 @@ class StatusHeader(Static):
 
     def render(self) -> Text:
         t = Text()
-        t.append(" ✻ ", style=f"bold {ACCENT}")
+        t.append(" ✻ ", style=f"bold {accent()}")
         t.append("soundable", style="bold")
         if self.server:
             t.append("  ·  ", style="dim")
@@ -42,7 +42,7 @@ class StatusHeader(Static):
         mode = f" {self.mode.upper()} "
         pad = max(1, self.size.width - t.cell_len - len(mode) - 1)
         t.append(" " * pad)
-        t.append(mode, style=f"bold reverse {ACCENT}")
+        t.append(mode, style=f"bold reverse {accent()}")
         return t
 
 
@@ -76,14 +76,14 @@ class NowPlaying(Widget):
         icon = "⏸" if s.paused else "▶"
         right = Text(style="dim")
         if s.shuffle:
-            right.append("⇄  ", style=f"bold {ACCENT}")
+            right.append("⇄  ", style=f"bold {accent()}")
         if s.repeat != "off":
-            right.append("↻1  " if s.repeat == "one" else "↻  ", style=f"bold {ACCENT}")
+            right.append("↻1  " if s.repeat == "one" else "↻  ", style=f"bold {accent()}")
         if s.context:
             right.append(f"♫ {s.context}  ·  ")
         right.append(f"vol {s.volume}%  ·  {s.index + 1}/{len(s.queue)}")
         left = Text()
-        left.append(f"{icon} ", style=f"bold {ACCENT}")
+        left.append(f"{icon} ", style=f"bold {accent()}")
         left.append(t.title, style="bold")
         left.append(" — ", style="dim")
         left.append(t.artist, style="cyan")
@@ -157,7 +157,7 @@ class TaskList(Static):
         for i, task in enumerate(self._tasks.values()):
             if i:
                 out.append("\n")
-            out.append(f"{spin} ", style=f"bold {ACCENT}")
+            out.append(f"{spin} ", style=f"bold {accent()}")
             out.append(task.label)
             if task.progress is not None:
                 out.append("  ")
@@ -192,7 +192,7 @@ class CommandMenu(OptionList):
         width = max(len(c.name) for c in specs) + 2 if specs else 0
         for c in specs:
             t = Text()
-            t.append(c.name.ljust(width), style=f"bold {ACCENT}")
+            t.append(c.name.ljust(width), style=f"bold {accent()}")
             t.append((c.args + "  ") if c.args else "", style="cyan")
             t.append(c.help, style="dim")
             self.add_option(Option(t))

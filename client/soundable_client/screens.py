@@ -15,7 +15,7 @@ from textual.widgets.option_list import Option
 
 from soundable_client.api import Api, ApiError, AuthError, NetworkError, Playlist, Track
 from soundable_client.config import InvalidServerUrl, normalize_server_url
-from soundable_client.formatting import ACCENT
+from soundable_client.formatting import accent
 
 
 class LoginResult:
@@ -34,7 +34,7 @@ class LoginScreen(ModalScreen[LoginResult | None]):
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="dialog"):
-            yield Static(f"[bold {ACCENT}]✻[/] [bold]Log in to your soundable server[/]")
+            yield Static(f"[bold {accent()}]✻[/] [bold]Log in to your soundable server[/]")
             yield Label("Server URL", classes="field-label")
             yield Input(
                 self.initial_url,
@@ -223,7 +223,7 @@ class PlaylistPickerScreen(ModalScreen[str | None]):
     def compose(self) -> ComposeResult:
         with Vertical(classes="dialog"):
             yield Static(f"Add [bold]{self.what}[/] to…")
-            options = [Option(Text("+ New playlist…", style=f"bold {ACCENT}"), id=NEW_PLAYLIST)]
+            options = [Option(Text("+ New playlist…", style=f"bold {accent()}"), id=NEW_PLAYLIST)]
             options += [
                 Option(Text.assemble(p.name, (f"  {p.track_count} tracks", "dim")), id=p.id)
                 for p in self.playlists

@@ -7,6 +7,7 @@ objects and only ever mutate the playlist through this class, so indexes stay in
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 import random
@@ -20,6 +21,7 @@ from soundable_client.mpv import Mpv, MpvError, escape_option_value
 log = logging.getLogger(__name__)
 
 REPEAT_MODES = ("off", "all", "one")
+NORMALIZE_FILTER = "lavfi=[loudnorm=I=-16:TP=-1.5:LRA=11]"
 OBSERVED = ("time-pos", "duration", "pause", "volume", "playlist-pos", "idle-active")
 
 
@@ -51,6 +53,8 @@ class Player:
         self.token = token
         self.state = PlayerState(volume=mpv.initial_volume)
         self._original: list[Track] = []  # queue order before shuffling
+        self.normalize = False
+        self.audio_device = "auto"
         self._listeners: list[Callable[[PlayerState], None]] = []
         self._error_listeners: list[Callable[[str], None]] = []
         mpv.on_event(self._on_event)
@@ -134,6 +138,7 @@ class Player:
             self._original = []
             await self.start()
             await self._apply_repeat()
+            await self._apply_audio_settings()
 
     async def _load(self, tracks: list[Track]) -> None:
         """Replace mpv's playlist with `tracks` without starting playback."""
@@ -301,6 +306,72 @@ class Player:
         self.state.volume = value
         self._notify()
         return value
+
+    # --- audio settings -----------------------------------------------------------------
+
+    async def set_normalize(self, on: bool) -> None:
+        """EBU R128 loudness normalisation, so quiet and loud imports play at similar levels."""
+        self.normalize = on
+        if self.mpv.running:
+            await self.mpv.set("af", NORMALIZE_FILTER if on else "")
+
+    async def audio_devices(self) -> list[tuple[str, str]]:
+        """(name, description) pairs from mpv, 'auto' first."""
+        await self.ensure_running()
+        devices = await self.mpv.get("audio-device-list") or []
+        return [(d.get("name", ""), d.get("description") or d.get("name", "")) for d in devices]
+
+    async def set_audio_device(self, name: str) -> None:
+        self.audio_device = name or "auto"
+        if self.mpv.running:
+            await self.mpv.set("audio-device", self.audio_device)
+
+    async def _apply_audio_settings(self) -> None:
+        if self.normalize:
+            await self.mpv.set("af", NORMALIZE_FILTER)
+        if self.audio_device != "auto":
+            with contextlib.suppress(MpvError):
+                await self.mpv.set("audio-device", self.audio_device)
+
+    # --- session restore --------------------------------------------------------------
+
+    def snapshot(self) -> tuple[list[str], list[str], int, float, str | None]:
+        s = self.state
+        return (
+            [t.id for t in s.queue],
+            [t.id for t in self._original],
+            s.index,
+            s.position,
+            s.context,
+        )
+
+    async def restore(
+        self,
+        queue: list[Track],
+        original: list[Track],
+        index: int,
+        position: float,
+        context: str | None,
+    ) -> None:
+        """Load a saved queue, paused at `position` of track `index`."""
+        if not queue:
+            return
+        await self.ensure_running()
+        index = max(0, min(index, len(queue) - 1))
+        await self.mpv.set("pause", True)
+        await self._load(queue)
+        self._original = list(original) or list(queue)
+        self.state.context = context
+        await self.mpv.command("playlist-play-index", index)
+        if position > 1:
+            # wait for the file to open before seeking
+            for _ in range(50):
+                if self.state.duration > 0 and self.state.index == index:
+                    break
+                await asyncio.sleep(0.1)
+            if position < self.state.duration - 2:  # never seek past the end
+                await self.seek_to(position)
+        self._notify()
 
     async def shutdown(self) -> None:
         await self.mpv.quit()
