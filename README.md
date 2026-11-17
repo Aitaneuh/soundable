@@ -1,5 +1,7 @@
 # soundable
 
+[![CI](https://github.com/Aitaneuh/soundable/actions/workflows/ci.yml/badge.svg)](https://github.com/Aitaneuh/soundable/actions/workflows/ci.yml)
+
 A personal, single-user music server with a Claude-Code-style terminal client and a
 Subsonic-compatible API for iPhone apps (Amperfy, play:Sub, substreamer).
 

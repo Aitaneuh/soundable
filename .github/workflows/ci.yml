@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  server:
+    name: Server (ruff + pytest)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+        with:
+          enable-cache: true
+      - name: System tools (ffmpeg for audio tests, PostgreSQL client for backup tests)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg postgresql-client
+      - run: uv sync --frozen
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      # Tests run against a real PostgreSQL started by testcontainers (Docker is available
+      # on GitHub's Ubuntu runners).
+      - run: uv run pytest -q
+
+  client:
+    name: Client (ruff + pytest)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: client
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+        with:
+          enable-cache: true
+      - run: uv sync --frozen
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run pytest -q
+
+  image:
+    name: Docker image builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/build-push-action@v7
+        with:
+          context: server
+          push: false
+          tags: soundable-server:ci
+          load: true
+      - name: Image smoke test (tools present, app imports)
+        run: |
+          docker run --rm --entrypoint sh soundable-server:ci -c \
+            'ffmpeg -version | head -1 && deno --version | head -1 && pg_dump --version \
+             && python -c "import app.main, app.worker, app.backup; print(\"imports ok\")"'
+      - name: Compose file is valid
+        run: |
+          POSTGRES_PASSWORD=x ADMIN_PASSWORD=x SECRET_KEY=x SUBSONIC_PASSWORD=x \
+            docker compose -f docker-compose.yml config -q
