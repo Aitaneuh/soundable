@@ -80,3 +80,14 @@ def test_html_error_pages_are_explained() -> None:
         httpx.Response(409, json={"detail": "Already there", "existing_track_id": "1"})
     )
     assert msg == "Already there" and data["existing_track_id"] == "1"
+
+
+def test_roots_are_never_uploads(tmp_path: Path) -> None:
+    import os
+
+    assert classify("/").kind == "command"
+    anchor = Path(os.path.abspath(tmp_path)).anchor  # "C:\\" or "/"
+    assert classify(anchor).kind in ("search", "command")
+    f = tmp_path / "x.mp3"
+    f.write_bytes(b"x")
+    assert classify(str(f)).kind == "upload"

@@ -69,6 +69,14 @@ class Classified:
     paths: tuple[Path, ...] = ()
 
 
+def _uploadable(p: Path) -> bool:
+    """An existing file or folder, but never a filesystem/drive root ("/", "C:\\")."""
+    try:
+        return p.exists() and not (p.is_dir() and p.resolve() == Path(p.resolve().anchor))
+    except OSError:
+        return False
+
+
 def classify(text: str) -> Classified:
     t = text.strip()
     if not t:
@@ -76,7 +84,7 @@ def classify(text: str) -> Classified:
     if t.startswith("/"):
         # On macOS/Linux a dropped file path also starts with "/": prefer the path.
         tokens = split_paths(t)
-        if tokens and all(Path(os.path.expanduser(tok)).exists() for tok in tokens):
+        if tokens and all(_uploadable(Path(os.path.expanduser(tok))) for tok in tokens):
             return Classified("upload", t, tuple(Path(os.path.expanduser(x)) for x in tokens))
         return Classified("command", t)
     if is_import_url(t):
@@ -84,6 +92,6 @@ def classify(text: str) -> Classified:
     tokens = split_paths(t)
     if tokens:
         candidates = [Path(os.path.expanduser(tok)) for tok in tokens]
-        if all(c.exists() for c in candidates):
+        if all(_uploadable(c) for c in candidates):
             return Classified("upload", t, tuple(candidates))
     return Classified("search", t)
